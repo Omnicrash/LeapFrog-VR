@@ -6,7 +6,8 @@
 //! - a lost connection (service stopped or restarted) gets a fresh connection too.
 //!
 //! The connection is multi-device aware and subscribes to each camera, which is what the service
-//! requires before it accepts a tracking hint (`trackingHint`, default `ultra_performance_mode`).
+//! requires before it accepts tracking hints (`trackingHint`, a comma-separated set; default
+//! `ultra_performance_mode,hand_on_object`; unknown hints are ignored by the service).
 
 #[cfg(not(feature = "host-stubs"))]
 use leap_sys as sys;
@@ -172,7 +173,10 @@ impl Connection {
         if unsafe { sys::LeapGetDeviceList(self.0, refs.as_mut_ptr(), &mut count) } != sys::_eLeapRS_eLeapRS_Success {
             return;
         }
-        let hint_c = hint.and_then(|h| std::ffi::CString::new(h).ok());
+        // The hint setting is a comma-separated set; one C string each, null-terminated array.
+        let hint_cs: Vec<std::ffi::CString> = hint
+            .map(|h| h.split(',').map(str::trim).filter(|h| !h.is_empty()).filter_map(|h| std::ffi::CString::new(h).ok()).collect())
+            .unwrap_or_default();
         for r in refs.iter().take(count.min(4) as usize) {
             let mut device: sys::LEAP_DEVICE = std::ptr::null_mut();
             // SAFETY: LeapC API; the device handle is kept until the connection is dropped.
@@ -181,15 +185,15 @@ impl Connection {
                     continue;
                 }
                 let subscribed = sys::LeapSubscribeEvents(self.0, device);
-                let hinted = match &hint_c {
-                    Some(h) => {
-                        let hints = [h.as_ptr(), std::ptr::null()];
-                        LeapSetDeviceHints(self.0, device, hints.as_ptr())
-                    }
-                    None => sys::_eLeapRS_eLeapRS_Success,
+                let hinted = if hint_cs.is_empty() {
+                    sys::_eLeapRS_eLeapRS_Success
+                } else {
+                    let mut hints: Vec<*const std::ffi::c_char> = hint_cs.iter().map(|h| h.as_ptr()).collect();
+                    hints.push(std::ptr::null());
+                    LeapSetDeviceHints(self.0, device, hints.as_ptr())
                 };
                 let id = r.id; // copied out: LEAP_DEVICE_REF is packed
-                log!("Leap: device {id} subscribed ({:#x}), hint {} ({:#x})", subscribed as u32, hint.unwrap_or("none"), hinted as u32);
+                log!("Leap: device {id} subscribed ({:#x}), hints {} ({:#x})", subscribed as u32, hint.unwrap_or("none"), hinted as u32);
             }
             self.1.push(device);
         }

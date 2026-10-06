@@ -116,7 +116,7 @@ pub extern "C" fn lf_init() -> i32 {
             #[cfg(not(feature = "host-stubs"))]
             leap: leap::Leap::start(leap::Config {
                 manage_service: host::setting_bool("manageService", true),
-                hint: Some(host::setting_string("trackingHint", "ultra_performance_mode")).filter(|h| !h.is_empty()),
+                hint: Some(host::setting_string("trackingHint", "ultra_performance_mode,hand_on_object")).filter(|h| !h.is_empty()),
             }),
             poses: vec![TrackedDevicePose::default(); host::MAX_TRACKED_DEVICE_COUNT],
             switches: [Switch::new(thresholds), Switch::new(thresholds)],

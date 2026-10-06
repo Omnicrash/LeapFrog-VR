@@ -3,7 +3,7 @@
     "enable": true,
     "debugPanic": false,
     "manageService": true,
-    "trackingHint": "ultra_performance_mode",
+    "trackingHint": "ultra_performance_mode,hand_on_object",
     "handOffsetX": 0.0,
     "handOffsetY": 0.0,
     "handOffsetZ": -0.01,
