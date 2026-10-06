@@ -6,7 +6,11 @@ cd "$(dirname "$0")"
 export PATH="$HOME/.cargo/bin:$PATH"
 
 install=0
-if [ "${1:-}" = "--install" ]; then install=1; shift; fi
+package=0
+case "${1:-}" in
+    --install) install=1; shift ;;
+    --package) package=1; shift ;;
+esac
 
 cargo xwin build --release --workspace "$@"
 # The hand models are checked in as results; their generator is local and untracked.
@@ -21,10 +25,18 @@ cp driver.vrdrivermanifest "$out/"
 cp -r resources "$out/resources"
 cp target/x86_64-pc-windows-msvc/release/driver_leapfrog.dll "$out/bin/win64/"
 cp target/x86_64-pc-windows-msvc/release/leapfrog-watchdog.exe "$out/bin/win64/"
+cp target/x86_64-pc-windows-msvc/release/leapfrog-setup.exe "$out/"
+version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+echo "$version" > "$out/VERSION"
 cp target/x86_64-pc-windows-msvc/release/driver_leapfrog.pdb "$out/bin/win64/" 2>/dev/null || true
 leapsdk="${LEAPSDK_LIB_PATH:-/mnt/e/Games/Steam/steamapps/common/Ultraleap Gemini/LeapSDK/lib/x64}"
 cp "$leapsdk/LeapC.dll" "$out/bin/win64/"
-echo "built $out"
+echo "built $out (version $version)"
+
+# --package: the folder as a zip for other machines; the installer is inside it.
+if [ "$package" = 1 ]; then
+    (cd dist && rm -f "LeapFrog-$version.zip" && zip -qr "LeapFrog-$version.zip" leapfrog) && echo "packaged dist/LeapFrog-$version.zip"
+fi
 
 # --install: copy over the registered driver folder; refused while SteamVR holds the DLL.
 if [ "$install" = 1 ]; then
