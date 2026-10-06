@@ -1,0 +1,3 @@
+newmtl hand
+Kd 0.82 0.82 0.85
+map_Kd leapfrog_hand_left-diff.png
