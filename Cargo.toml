@@ -6,6 +6,9 @@ license = "MIT"
 description = "Minimal SteamVR driver: Ultraleap hands as hand-tracking devices"
 publish = false
 
+[workspace]
+members = ["watchdog"]
+
 [lib]
 crate-type = ["cdylib"]
 
@@ -14,7 +17,7 @@ leap-sys = "0.2"
 glam = "0.29"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Services", "Win32_System_Registry", "Win32_Security"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Services", "Win32_System_Registry", "Win32_System_LibraryLoader", "Win32_Security"] }
 
 [features]
 # cargo test on the build host: stubs instead of the shim and LeapC

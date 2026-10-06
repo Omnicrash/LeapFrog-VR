@@ -1,0 +1,10 @@
+[package]
+name = "leapfrog-watchdog"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Stops the UltraleapTracking service once the given process (vrserver) is gone"
+publish = false
+
+[dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Services", "Win32_System_Threading"] }

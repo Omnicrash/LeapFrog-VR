@@ -99,24 +99,47 @@ mod win {
         }
     }
 
-    /// A watchdog for the case Cleanup never runs (vrserver crashed or killed): a hidden
-    /// PowerShell that waits on this very process and then stops the service. Detached, so it
-    /// outlives vrserver; on a clean exit the service is already stopped and it does nothing.
+    /// The folder this DLL was loaded from (bin/win64 of the driver).
+    fn own_directory() -> Option<std::path::PathBuf> {
+        use windows_sys::Win32::System::LibraryLoader::{
+            GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        };
+        let mut module = std::ptr::null_mut();
+        let mut path = [0u16; 1024];
+        // SAFETY: the address of this function lies inside the DLL; buffer and size go together.
+        let n = unsafe {
+            if GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                own_directory as *const () as *const u16,
+                &mut module,
+            ) == 0
+            {
+                return None;
+            }
+            GetModuleFileNameW(module, path.as_mut_ptr(), path.len() as u32)
+        };
+        if n == 0 {
+            return None;
+        }
+        let file = std::path::PathBuf::from(String::from_utf16_lossy(&path[..n as usize]));
+        file.parent().map(|p| p.to_path_buf())
+    }
+
+    /// A watchdog for the case Cleanup never runs (vrserver crashed or killed):
+    /// `leapfrog-watchdog.exe <pid>` next to this DLL waits on this very process and then stops
+    /// the service. Detached, so it outlives vrserver; after a clean exit it finds the service
+    /// stopped already.
     pub fn spawn_watchdog() -> Result<u32, String> {
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         const DETACHED_PROCESS: u32 = 0x0000_0008;
-        let pid = std::process::id();
-        let script = format!(
-            "Wait-Process -Id {pid} -ErrorAction SilentlyContinue; Stop-Service -Name UltraleapTracking -ErrorAction SilentlyContinue"
-        );
-        let child = Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
-            .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+        let exe = own_directory().ok_or("own path unknown")?.join("leapfrog-watchdog.exe");
+        let child = Command::new(&exe)
+            .arg(std::process::id().to_string())
+            .creation_flags(DETACHED_PROCESS)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
-            .map_err(|e| format!("could not start powershell: {e}"))?;
+            .map_err(|e| format!("could not start {}: {e}", exe.display()))?;
         Ok(child.id())
     }
 
