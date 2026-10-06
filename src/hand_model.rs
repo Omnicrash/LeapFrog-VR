@@ -57,13 +57,14 @@ fn obj(name: &str, bones: &[(Vec3, Vec3, f32)]) -> String {
     let normal = along.cross(across).normalize_or_zero();
     let length = middle_tip.length();
     let _ = finger_width;
-    // Flat slab: the mid slice is exactly the outline; the edge is rounded with a radius well
-    // under the icon's finger half-width (about 1/16 of the length), so no finger collapses.
-    let half_thickness = length * 0.045;
-    let radius = (length * 0.025).min(half_thickness);
+    // A dome over the outline: the mid slice is exactly the outline, and each level up is the
+    // outline shrunk inward, steeply at first and flattening toward the top, until the fingers
+    // close along their centerlines. Half thickness at the palm's center ~7.5% of the length.
+    let half_thickness = length * 0.075;
+    let reach = length * 0.3; // inward distance at which the profile reaches the top
 
     let outline: Vec<Vec2> = crate::hand_outline::HAND_OUTLINE.iter().map(|p| Vec2::new(p[0] * length, p[1] * length)).collect();
-    mesh.rounded_slab(&outline, half_thickness, radius, |p, z| across * p.x + along * p.y + normal * z, across, along, normal);
+    mesh.dome(&outline, half_thickness, reach, |p, z| across * p.x + along * p.y + normal * z, across, along, normal);
     mesh.to_obj(name)
 }
 
@@ -110,21 +111,70 @@ fn resample(poly: &[Vec2], step: f32) -> Vec<Vec2> {
     out
 }
 
-/// Moves every vertex of a counterclockwise polygon inward by `d` (miter, limited). Edges that
-/// would flip direction, where the outline is thinner than 2d, collapse to their midpoint
-/// instead of crossing, so the point count stays and nothing turns inside out.
+/// Distance from a point to a segment.
+fn segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
+    let ab = b - a;
+    let t = if ab.length_squared() > 0.0 { ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+    p.distance(a + ab * t)
+}
+
+/// Moves every vertex of a counterclockwise polygon inward by `d`, but no vertex travels past
+/// the shape's centerline: each stops where it gets as close to another part of the outline as
+/// to its own (the medial axis). Thin parts therefore close instead of turning inside out, and
+/// the point count stays, so rings can be stitched.
 fn offset_inward(poly: &[Vec2], d: f32) -> Vec<Vec2> {
     let n = poly.len();
-    let mut out: Vec<Vec2> = (0..n)
+    // Per vertex: inward bisector and the travel the plain offset asks for.
+    let moves: Vec<(Vec2, f32)> = (0..n)
         .map(|i| {
             let (prev, cur, next) = (poly[(i + n - 1) % n], poly[i], poly[(i + 1) % n]);
             let n1 = (cur - prev).normalize_or_zero().perp(); // left normal = inward for CCW
             let n2 = (next - cur).normalize_or_zero().perp();
             let bisector = (n1 + n2).normalize_or_zero();
             let cos_half = bisector.dot(n1).max(0.5); // miter limit 2x
-            cur + bisector * (d / cos_half)
+            (bisector, d / cos_half)
         })
         .collect();
+    // Per edge: the travel at which its two ends meet (convex parts narrower than the offset),
+    // beyond which they would cross. Both ends stop there.
+    let mut limit: Vec<f32> = moves.iter().map(|m| m.1).collect();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let e0 = poly[j] - poly[i];
+        let de = moves[j].0 - moves[i].0;
+        let denominator = e0.dot(de);
+        if denominator < -1e-12 {
+            let t_meet = -e0.length_squared() / denominator;
+            limit[i] = limit[i].min(t_meet);
+            limit[j] = limit[j].min(t_meet);
+        }
+    }
+    let mut out: Vec<Vec2> = (0..n)
+        .map(|i| {
+            let (bisector, _) = moves[i];
+            let cur = poly[i];
+            let full = limit[i].max(0.0);
+            // Largest travel t <= full with the far outline at least t away (binary search):
+            // thin parts stop on the centerline instead of crossing it.
+            let far_ok = |t: f32| {
+                let p = cur + bisector * t;
+                (0..n)
+                    .filter(|&e| e != i && e != (i + n - 1) % n && e != (i + 1) % n && e != (i + n - 2) % n)
+                    .all(|e| segment_distance(p, poly[e], poly[(e + 1) % n]) >= t * 0.98)
+            };
+            let (mut lo, mut hi) = (0.0f32, full);
+            if far_ok(full) {
+                lo = full;
+            } else {
+                for _ in 0..18 {
+                    let mid = (lo + hi) * 0.5;
+                    if far_ok(mid) { lo = mid } else { hi = mid }
+                }
+            }
+            cur + bisector * lo
+        })
+        .collect();
+    // Anything still crossing (numerical leftovers) collapses to the edge midpoint.
     for _ in 0..8 {
         let mut changed = false;
         for i in 0..n {
@@ -194,40 +244,35 @@ struct Mesh {
 }
 
 impl Mesh {
-    /// The outline extruded to a slab of half-thickness `half`: a straight wall from the mid
-    /// slice up to `half - radius`, then a quarter-circle edge into the flat top; mirrored
-    /// below. `place` maps outline coordinates and a height to 3D.
-    fn rounded_slab(&mut self, outline: &[Vec2], half: f32, radius: f32, place: impl Fn(Vec2, f32) -> Vec3, across: Vec3, along: Vec3, normal: Vec3) {
-        let mut outline: Vec<Vec2> = resample(outline, radius * 0.6);
+    /// The outline as the base of a dome, mirrored below: ring k is the outline moved inward
+    /// by `reach * (1 - cos t)` at height `half * sin t`, a quarter ellipse from the edge
+    /// (vertical) to the top (flat). Where the shape is thinner than twice the inward distance,
+    /// the ring collapses onto the centerline, so fingers close into rounded bars while the
+    /// palm keeps rising: a hand with a thickness that follows its width.
+    fn dome(&mut self, outline: &[Vec2], half: f32, reach: f32, place: impl Fn(Vec2, f32) -> Vec3, across: Vec3, along: Vec3, normal: Vec3) {
+        let mut outline: Vec<Vec2> = resample(outline, reach * 0.04);
         if signed_area(&outline) < 0.0 {
             outline.reverse();
         }
-        const STEPS: usize = 6;
+        const STEPS: usize = 14;
         let n = outline.len();
         let to3 = |v: Vec2, z: f32| (across * v.x + along * v.y + normal * z).normalize_or_zero();
         for side in [1.0f32, -1.0] {
-            // Rings from the equator (edge, z = 0) inward and up to the flat cap at d = radius.
             let first = self.vertices.len();
             let mut rings = Vec::new();
-            // Ring 0: the mid slice (z = 0), the outline itself; ring 1: top of the straight
-            // wall; then the quarter circle in STEPS - 1 more rings.
             for k in 0..=STEPS {
-                let (d, z, theta) = if k == 0 {
-                    (0.0, 0.0, 0.0)
-                } else {
-                    let theta = (k - 1) as f32 / (STEPS - 1) as f32 * std::f32::consts::FRAC_PI_2;
-                    (radius * (1.0 - theta.cos()), (half - radius) + radius * theta.sin(), theta)
-                };
+                let t = k as f32 / STEPS as f32 * std::f32::consts::FRAC_PI_2;
+                let (d, z) = (reach * (1.0 - t.cos()), half * t.sin());
                 let ring = offset_inward(&outline, d);
                 for (i, p) in ring.iter().enumerate() {
-                    let (prev, next) = (ring[(i + n - 1) % n], ring[(i + 1) % n]);
+                    // Outward direction from the base outline (collapsed rings have none of their own).
+                    let (prev, next) = (outline[(i + n - 1) % n], outline[(i + 1) % n]);
                     let outward = -((next - prev).normalize_or_zero().perp());
-                    let nrm = to3(outward * theta.cos(), theta.sin() * side);
+                    let nrm = to3(outward * t.cos(), t.sin() * side);
                     self.vertices.push((place(*p, z * side), nrm));
                 }
                 rings.push(ring);
             }
-            // Quads between consecutive rings; winding flipped for the bottom side.
             for k in 0..STEPS {
                 for i in 0..n {
                     let (a, b) = (first + k * n + i, first + k * n + (i + 1) % n);
@@ -241,13 +286,16 @@ impl Mesh {
                     }
                 }
             }
-            // The flat cap over the innermost ring.
-            let cap_first = first + STEPS * n;
-            for t in triangulate(&rings[STEPS]) {
-                if side > 0.0 {
-                    self.faces.push([cap_first + t[0], cap_first + t[1], cap_first + t[2]]);
-                } else {
-                    self.faces.push([cap_first + t[0], cap_first + t[2], cap_first + t[1]]);
+            // Whatever is left open at the top (the palm's center) gets a cap.
+            let top = &rings[STEPS];
+            if signed_area(top) > 1e-6 {
+                let cap_first = first + STEPS * n;
+                for t in triangulate(top) {
+                    if side > 0.0 {
+                        self.faces.push([cap_first + t[0], cap_first + t[1], cap_first + t[2]]);
+                    } else {
+                        self.faces.push([cap_first + t[0], cap_first + t[2], cap_first + t[1]]);
+                    }
                 }
             }
         }
@@ -396,18 +444,18 @@ mod tests {
     #[test]
     fn offset_rings_keep_their_shape_at_the_model_radius() {
         let length = 0.16f32;
-        let radius = length * 0.025;
+        let reach = length * 0.3;
         let raw: Vec<Vec2> = crate::hand_outline::HAND_OUTLINE.iter().map(|p| Vec2::new(p[0] * length, p[1] * length)).collect();
-        let mut poly = resample(&raw, radius * 0.6);
+        let mut poly = resample(&raw, reach * 0.04);
         if signed_area(&poly) < 0.0 {
             poly.reverse();
         }
         let base = signed_area(&poly);
         let mut last = base;
-        for k in 1..=6 {
-            let ring = offset_inward(&poly, radius * k as f32 / 6.0);
+        for k in 1..=14 {
+            let ring = offset_inward(&poly, reach * k as f32 / 14.0);
             let area = signed_area(&ring);
-            assert!(area > 0.0 && area < last, "ring {k}: area {area} vs {last}");
+            assert!(area >= -1e-6 && area < last, "ring {k}: area {area} vs {last}");
             // No edge may point against the original outline (collapsed edges are fine).
             for i in 0..poly.len() {
                 let (a, b) = (poly[(i + 1) % poly.len()] - poly[i], ring[(i + 1) % poly.len()] - ring[i]);
