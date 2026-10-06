@@ -15,6 +15,7 @@
     "awayDistance": 0.20,
     "nearDistance": 0.15,
     "awayTime": 0.1,
+    "unseenTime": 1.5,
     "stillSpeed": 0.15,
     "pickupSpeed": 0.4
   }

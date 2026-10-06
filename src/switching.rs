@@ -21,13 +21,15 @@ pub struct Thresholds {
     pub away_m: f32,
     pub near_m: f32,
     pub away_s: f32,
+    /// In Leap mode with the controller on: hand unseen this long -> controller.
+    pub unseen_s: f32,
     pub still_mps: f32,
     pub pickup_mps: f32,
 }
 
 impl Default for Thresholds {
     fn default() -> Thresholds {
-        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 0.1, still_mps: 0.15, pickup_mps: 0.4 }
+        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 0.1, unseen_s: 1.5, still_mps: 0.15, pickup_mps: 0.4 }
     }
 }
 
@@ -46,19 +48,21 @@ pub struct Observation {
 pub struct Switch {
     state: Driver,
     away_since: Option<f64>,
+    unseen_since: Option<f64>,
     controller_known: bool,
     thresholds: Thresholds,
 }
 
 impl Switch {
     pub fn new(thresholds: Thresholds) -> Switch {
-        Switch { state: Driver::Controller, away_since: None, controller_known: false, thresholds }
+        Switch { state: Driver::Controller, away_since: None, unseen_since: None, controller_known: false, thresholds }
     }
 
     /// `now_s` is any monotonic clock in seconds.
     pub fn update(&mut self, now_s: f64, o: &Observation) -> Driver {
         if !o.controller_on {
             self.away_since = None;
+            self.unseen_since = None;
             self.controller_known = o.controller_known;
             self.state = Driver::Leap;
             return self.state;
@@ -77,9 +81,17 @@ impl Switch {
         };
         match self.state {
             Driver::Leap => {
-                if speed > t.pickup_mps || distance.is_some_and(|d| d < t.near_m) {
+                let unseen_long = if o.hand_position.is_some() {
+                    self.unseen_since = None;
+                    false
+                } else {
+                    let since = *self.unseen_since.get_or_insert(now_s);
+                    now_s - since >= t.unseen_s as f64
+                };
+                if speed > t.pickup_mps || distance.is_some_and(|d| d < t.near_m) || unseen_long {
                     self.state = Driver::Controller;
                     self.away_since = None;
+                    self.unseen_since = None;
                 }
             }
             Driver::Controller => {
@@ -155,6 +167,26 @@ mod tests {
         let mut s = Switch::new(Thresholds::default());
         assert_eq!(s.update(0.0, &obs(false, Vec3::ZERO, 0.0, None)), Driver::Leap);
         assert_eq!(s.update(1.0, &obs(true, Vec3::ZERO, 0.0, Some(Vec3::new(0.05, 0.0, 0.0)))), Driver::Controller);
+    }
+
+    #[test]
+    fn unseen_hand_gives_the_controller_back() {
+        let mut s = Switch::new(Thresholds::default());
+        assert_eq!(s.update(0.0, &obs(false, Vec3::ZERO, 0.0, None)), Driver::Leap);
+        // Controller on, still, hand nowhere in view: Leap for a while, then the controller.
+        assert_eq!(s.update(1.0, &obs(true, Vec3::ZERO, 0.0, None)), Driver::Leap);
+        assert_eq!(s.update(2.0, &obs(true, Vec3::ZERO, 0.0, None)), Driver::Leap);
+        assert_eq!(s.update(2.6, &obs(true, Vec3::ZERO, 0.0, None)), Driver::Controller);
+    }
+
+    #[test]
+    fn seen_hand_away_from_still_controller_stays_leap() {
+        let mut s = Switch::new(Thresholds::default());
+        let far = Some(Vec3::new(0.5, 0.0, 0.0));
+        assert_eq!(s.update(0.0, &obs(false, Vec3::ZERO, 0.0, far)), Driver::Leap);
+        for i in 1..50 {
+            assert_eq!(s.update(i as f64 * 0.1, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Leap);
+        }
     }
 
     #[test]

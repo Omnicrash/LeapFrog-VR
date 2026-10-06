@@ -73,6 +73,7 @@ fn read_thresholds() -> Thresholds {
         away_m: host::setting_float("awayDistance", d.away_m),
         near_m: host::setting_float("nearDistance", d.near_m),
         away_s: host::setting_float("awayTime", d.away_s),
+        unseen_s: host::setting_float("unseenTime", d.unseen_s),
         still_mps: host::setting_float("stillSpeed", d.still_mps),
         pickup_mps: host::setting_float("pickupSpeed", d.pickup_mps),
     }
