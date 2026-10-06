@@ -1,0 +1,12 @@
+{
+  "jsonid": "input_profile",
+  "controller_type": "vd_hand_controller",
+  "device_class": "TrackedDeviceClass_Controller",
+  "input_bindingui_mode": "controller_handed",
+  "should_show_binding_errors": false,
+  "input_source": {
+    "/input/skeleton/left": { "type": "skeleton", "skeleton": "/skeleton/hand/left", "side": "left", "binding_image_point": [5, 35] },
+    "/input/skeleton/right": { "type": "skeleton", "skeleton": "/skeleton/hand/right", "side": "right", "binding_image_point": [5, 35] },
+    "/pose/raw": { "type": "pose", "binding_image_point": [5, 35] }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "driver_leapfrog": {
+    "enable": true,
+    "debugPanic": false
+  }
+}

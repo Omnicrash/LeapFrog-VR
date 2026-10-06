@@ -1,0 +1,18 @@
+[package]
+name = "driver_leapfrog"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Minimal SteamVR driver: Ultraleap hands as hand-tracking devices"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+
+[build-dependencies]
+cc = "1"
+
+[profile.release]
+debug = 1
