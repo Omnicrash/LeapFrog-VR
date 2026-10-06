@@ -56,10 +56,14 @@ fn obj(name: &str, bones: &[(Vec3, Vec3, f32)]) -> String {
     let across = (across_raw - along * across_raw.dot(along)).normalize_or_zero();
     let normal = along.cross(across).normalize_or_zero();
     let length = middle_tip.length();
-    let radius = finger_width * 0.45; // half thickness = edge radius: a pill profile
+    let _ = finger_width;
+    // Flat slab: the mid slice is exactly the outline; the edge is rounded with a radius well
+    // under the icon's finger half-width (about 1/16 of the length), so no finger collapses.
+    let half_thickness = length * 0.045;
+    let radius = (length * 0.025).min(half_thickness);
 
     let outline: Vec<Vec2> = crate::hand_outline::HAND_OUTLINE.iter().map(|p| Vec2::new(p[0] * length, p[1] * length)).collect();
-    mesh.rounded_slab(&outline, radius, |p, z| across * p.x + along * p.y + normal * z, across, along, normal);
+    mesh.rounded_slab(&outline, half_thickness, radius, |p, z| across * p.x + along * p.y + normal * z, across, along, normal);
     mesh.to_obj(name)
 }
 
@@ -82,10 +86,36 @@ fn signed_area(poly: &[Vec2]) -> f32 {
     (0..n).map(|i| poly[i].perp_dot(poly[(i + 1) % n])).sum::<f32>() * 0.5
 }
 
-/// Moves every vertex of a counterclockwise polygon inward by `d` (miter, limited).
+/// Resamples a closed polygon to points spaced about `step` apart along it.
+fn resample(poly: &[Vec2], step: f32) -> Vec<Vec2> {
+    let n = poly.len();
+    let total: f32 = (0..n).map(|i| poly[i].distance(poly[(i + 1) % n])).sum();
+    let count = ((total / step).round() as usize).max(8);
+    let spacing = total / count as f32;
+    let mut out = Vec::with_capacity(count);
+    let (mut i, mut along) = (0usize, 0.0f32); // current edge and distance into it
+    for _ in 0..count {
+        loop {
+            let len = poly[i].distance(poly[(i + 1) % n]);
+            if along <= len || len == 0.0 && along <= 0.0 {
+                let t = if len > 0.0 { along / len } else { 0.0 };
+                out.push(poly[i].lerp(poly[(i + 1) % n], t));
+                along += spacing;
+                break;
+            }
+            along -= len;
+            i = (i + 1) % n;
+        }
+    }
+    out
+}
+
+/// Moves every vertex of a counterclockwise polygon inward by `d` (miter, limited). Edges that
+/// would flip direction, where the outline is thinner than 2d, collapse to their midpoint
+/// instead of crossing, so the point count stays and nothing turns inside out.
 fn offset_inward(poly: &[Vec2], d: f32) -> Vec<Vec2> {
     let n = poly.len();
-    (0..n)
+    let mut out: Vec<Vec2> = (0..n)
         .map(|i| {
             let (prev, cur, next) = (poly[(i + n - 1) % n], poly[i], poly[(i + 1) % n]);
             let n1 = (cur - prev).normalize_or_zero().perp(); // left normal = inward for CCW
@@ -94,7 +124,23 @@ fn offset_inward(poly: &[Vec2], d: f32) -> Vec<Vec2> {
             let cos_half = bisector.dot(n1).max(0.5); // miter limit 2x
             cur + bisector * (d / cos_half)
         })
-        .collect()
+        .collect();
+    for _ in 0..8 {
+        let mut changed = false;
+        for i in 0..n {
+            let j = (i + 1) % n;
+            if (poly[j] - poly[i]).dot(out[j] - out[i]) < 0.0 {
+                let mid = (out[i] + out[j]) * 0.5;
+                out[i] = mid;
+                out[j] = mid;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    out
 }
 
 /// Ear clipping of a simple counterclockwise polygon; indices into it.
@@ -148,11 +194,11 @@ struct Mesh {
 }
 
 impl Mesh {
-    /// The outline extruded to a slab of half-thickness `radius` with a quarter-circle edge
-    /// profile top and bottom (so the edge is a full half-round). `place` maps outline
-    /// coordinates and a height to 3D.
-    fn rounded_slab(&mut self, outline: &[Vec2], radius: f32, place: impl Fn(Vec2, f32) -> Vec3, across: Vec3, along: Vec3, normal: Vec3) {
-        let mut outline: Vec<Vec2> = outline.to_vec();
+    /// The outline extruded to a slab of half-thickness `half`: a straight wall from the mid
+    /// slice up to `half - radius`, then a quarter-circle edge into the flat top; mirrored
+    /// below. `place` maps outline coordinates and a height to 3D.
+    fn rounded_slab(&mut self, outline: &[Vec2], half: f32, radius: f32, place: impl Fn(Vec2, f32) -> Vec3, across: Vec3, along: Vec3, normal: Vec3) {
+        let mut outline: Vec<Vec2> = resample(outline, radius * 0.6);
         if signed_area(&outline) < 0.0 {
             outline.reverse();
         }
@@ -163,15 +209,21 @@ impl Mesh {
             // Rings from the equator (edge, z = 0) inward and up to the flat cap at d = radius.
             let first = self.vertices.len();
             let mut rings = Vec::new();
+            // Ring 0: the mid slice (z = 0), the outline itself; ring 1: top of the straight
+            // wall; then the quarter circle in STEPS - 1 more rings.
             for k in 0..=STEPS {
-                let theta = k as f32 / STEPS as f32 * std::f32::consts::FRAC_PI_2;
-                let (d, z) = (radius * (1.0 - theta.cos()), radius * theta.sin() * side);
+                let (d, z, theta) = if k == 0 {
+                    (0.0, 0.0, 0.0)
+                } else {
+                    let theta = (k - 1) as f32 / (STEPS - 1) as f32 * std::f32::consts::FRAC_PI_2;
+                    (radius * (1.0 - theta.cos()), (half - radius) + radius * theta.sin(), theta)
+                };
                 let ring = offset_inward(&outline, d);
                 for (i, p) in ring.iter().enumerate() {
                     let (prev, next) = (ring[(i + n - 1) % n], ring[(i + 1) % n]);
                     let outward = -((next - prev).normalize_or_zero().perp());
                     let nrm = to3(outward * theta.cos(), theta.sin() * side);
-                    self.vertices.push((place(*p, z), nrm));
+                    self.vertices.push((place(*p, z * side), nrm));
                 }
                 rings.push(ring);
             }
@@ -339,6 +391,40 @@ mod tests {
         // Total triangle area equals the polygon's.
         let area: f32 = tris.iter().map(|t| (poly[t[1]] - poly[t[0]]).perp_dot(poly[t[2]] - poly[t[0]]) * 0.5).sum();
         assert!((area - signed_area(&poly)).abs() < 1e-3, "area {area} vs {}", signed_area(&poly));
+    }
+
+    #[test]
+    fn offset_rings_keep_their_shape_at_the_model_radius() {
+        let length = 0.16f32;
+        let radius = length * 0.025;
+        let raw: Vec<Vec2> = crate::hand_outline::HAND_OUTLINE.iter().map(|p| Vec2::new(p[0] * length, p[1] * length)).collect();
+        let mut poly = resample(&raw, radius * 0.6);
+        if signed_area(&poly) < 0.0 {
+            poly.reverse();
+        }
+        let base = signed_area(&poly);
+        let mut last = base;
+        for k in 1..=6 {
+            let ring = offset_inward(&poly, radius * k as f32 / 6.0);
+            let area = signed_area(&ring);
+            assert!(area > 0.0 && area < last, "ring {k}: area {area} vs {last}");
+            // No edge may point against the original outline (collapsed edges are fine).
+            for i in 0..poly.len() {
+                let (a, b) = (poly[(i + 1) % poly.len()] - poly[i], ring[(i + 1) % poly.len()] - ring[i]);
+                assert!(a.dot(b) >= -1e-9, "edge {i} flipped at ring {k}");
+            }
+            last = area;
+        }
+    }
+
+    #[test]
+    fn mid_slice_is_the_outline() {
+        let text = obj("test", &test_hand());
+        // The first ring written is the outline at z = 0 in the palm plane: for the test hand
+        // the plane is y = 0, so those vertices have |y| ~ 0.
+        let ys: Vec<f32> = text.lines().filter(|l| l.starts_with("v ")).take(40)
+            .filter_map(|l| l[2..].split_whitespace().nth(1)?.parse().ok()).collect();
+        assert!(ys.iter().all(|y| y.abs() < 1e-4), "mid slice off the palm plane: {:?}", &ys[..4]);
     }
 
     #[test]

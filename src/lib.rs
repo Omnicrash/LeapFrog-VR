@@ -87,7 +87,7 @@ fn read_offsets() -> Offsets {
         position: Vec3::new(
             host::setting_float("handOffsetX", 0.0),
             host::setting_float("handOffsetY", 0.0),
-            host::setting_float("handOffsetZ", -0.08),
+            host::setting_float("handOffsetZ", -0.01),
         ),
         rotation_degrees: Vec3::new(
             host::setting_float("rotationOffsetX", 0.0),
