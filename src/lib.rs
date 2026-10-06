@@ -42,6 +42,9 @@ struct State {
     switches: [Switch; 2],
     offsets: Offsets,
     write_hand_model: bool,
+    pickup_enabled: bool,
+    room_setup: bool,
+    frame: u32,
     debug_panic_pending: bool,
 }
 
@@ -74,6 +77,7 @@ fn read_thresholds() -> Thresholds {
         near_m: host::setting_float("nearDistance", d.near_m),
         away_s: host::setting_float("awayTime", d.away_s),
         unseen_s: host::setting_float("unseenTime", d.unseen_s),
+        lockout_s: host::setting_float("lockoutTime", d.lockout_s),
         still_mps: host::setting_float("stillSpeed", d.still_mps),
         pickup_mps: host::setting_float("pickupSpeed", d.pickup_mps),
     }
@@ -108,12 +112,7 @@ pub extern "C" fn lf_init() -> i32 {
             }
         }
         let offsets = read_offsets();
-        // pickupSwitching off = stage 1 behavior, the controller's power alone decides.
-        let thresholds = if host::setting_bool("pickupSwitching", true) {
-            read_thresholds()
-        } else {
-            Thresholds { away_m: f32::INFINITY, ..Thresholds::default() }
-        };
+        let thresholds = read_thresholds();
         let state = State {
             hands,
             controllers: Controllers::new(),
@@ -126,6 +125,9 @@ pub extern "C" fn lf_init() -> i32 {
             switches: [Switch::new(thresholds), Switch::new(thresholds)],
             offsets,
             write_hand_model: host::setting_bool("writeHandModel", false),
+            pickup_enabled: host::setting_bool("pickupSwitching", true),
+            room_setup: false,
+            frame: 0,
             debug_panic_pending: host::setting_bool("debugPanic", false),
         };
         *STATE.lock().unwrap() = Some(state);
@@ -188,10 +190,24 @@ impl State {
         let head = self.poses.first().copied();
         let now_s = now as f64 * 1e-6;
 
+        // Once a second: the live switch (pickupSwitching off = stage 1, controller power alone
+        // decides) and whether SteamVR's room setup is running, which needs the controllers.
+        self.frame = self.frame.wrapping_add(1);
+        if self.frame % 90 == 0 {
+            self.pickup_enabled = host::setting_bool("pickupSwitching", true);
+            let room_setup = service::process_running("steamvr_room_setup.exe");
+            if room_setup != self.room_setup {
+                self.room_setup = room_setup;
+                log!("room setup {}: controllers {}", if room_setup { "running" } else { "closed" }, if room_setup { "hold the slots" } else { "switch again" });
+            }
+        }
+        let force_controller = !self.pickup_enabled || self.room_setup;
+
         for (i, hand) in self.hands.iter_mut().enumerate() {
             let hand_position = hand.locate(samples[i].as_ref(), head.as_ref(), &self.offsets);
             let controller = self.controllers.pose(i as u32, &self.poses);
             let observation = Observation {
+                force_controller,
                 controller_known: controller.is_some(),
                 controller_on: controller.map(|c| c.device_is_connected).unwrap_or(false),
                 controller_position: controller.filter(|c| c.pose_is_valid).map(|c| {

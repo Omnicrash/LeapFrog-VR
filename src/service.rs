@@ -72,6 +72,34 @@ mod win {
         }
     }
 
+    /// Whether a process with this image name runs (case-insensitive), via a process snapshot.
+    pub fn process_running(name: &str) -> bool {
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+        };
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        let wanted = name.to_ascii_lowercase();
+        // SAFETY: Win32 ToolHelp API, handle closed below; the entry struct is sized before use.
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snapshot == INVALID_HANDLE_VALUE {
+                return false;
+            }
+            let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            let mut found = false;
+            let mut ok = Process32FirstW(snapshot, &mut entry) != 0;
+            while ok && !found {
+                let end = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+                let exe = String::from_utf16_lossy(&entry.szExeFile[..end]).to_ascii_lowercase();
+                found = exe == wanted;
+                ok = Process32NextW(snapshot, &mut entry) != 0;
+            }
+            CloseHandle(snapshot);
+            found
+        }
+    }
+
     fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
     }
@@ -174,6 +202,10 @@ mod win {
     pub fn own_directory() -> Option<std::path::PathBuf> {
         None
     }
+
+    pub fn process_running(_name: &str) -> bool {
+        false
+    }
 }
 
 #[cfg_attr(feature = "host-stubs", allow(dead_code))]
@@ -206,4 +238,8 @@ fn report(what: &str, result: Result<bool, u32>) {
 
 pub fn dll_directory() -> Option<std::path::PathBuf> {
     win::own_directory()
+}
+
+pub fn process_running(name: &str) -> bool {
+    win::process_running(name)
 }

@@ -23,19 +23,23 @@ pub struct Thresholds {
     pub away_s: f32,
     /// In Leap mode with the controller on: hand unseen this long -> controller.
     pub unseen_s: f32,
+    /// After a hand-back, no new take-over for this long (rides out a brief pause in a move).
+    pub lockout_s: f32,
     pub still_mps: f32,
     pub pickup_mps: f32,
 }
 
 impl Default for Thresholds {
     fn default() -> Thresholds {
-        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 0.1, unseen_s: 1.5, still_mps: 0.15, pickup_mps: 0.4 }
+        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 0.1, unseen_s: 1.5, lockout_s: 1.0, still_mps: 0.08, pickup_mps: 0.4 }
     }
 }
 
 /// What one frame knows about one hand and its controller, in world space.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Observation {
+    /// Controllers hold the slots no matter what (room setup running, switching turned off).
+    pub force_controller: bool,
     /// Whether the controller has been identified at all; before that nothing is known.
     pub controller_known: bool,
     pub controller_on: bool,
@@ -49,13 +53,14 @@ pub struct Switch {
     state: Driver,
     away_since: Option<f64>,
     unseen_since: Option<f64>,
+    locked_until: f64,
     controller_known: bool,
     thresholds: Thresholds,
 }
 
 impl Switch {
     pub fn new(thresholds: Thresholds) -> Switch {
-        Switch { state: Driver::Controller, away_since: None, unseen_since: None, controller_known: false, thresholds }
+        Switch { state: Driver::Controller, away_since: None, unseen_since: None, locked_until: 0.0, controller_known: false, thresholds }
     }
 
     /// `now_s` is any monotonic clock in seconds.
@@ -67,10 +72,14 @@ impl Switch {
             self.state = Driver::Leap;
             return self.state;
         }
-        if o.controller_known && !self.controller_known {
-            // Found powered on: in use until proven put down.
+        if (o.controller_known && !self.controller_known) || o.force_controller {
+            // Found powered on, or forced: in use until proven put down.
             self.state = Driver::Controller;
             self.away_since = None;
+            self.controller_known = o.controller_known;
+            if o.force_controller {
+                return self.state;
+            }
         }
         self.controller_known = o.controller_known;
         let t = &self.thresholds;
@@ -92,10 +101,11 @@ impl Switch {
                     self.state = Driver::Controller;
                     self.away_since = None;
                     self.unseen_since = None;
+                    self.locked_until = now_s + t.lockout_s as f64;
                 }
             }
             Driver::Controller => {
-                let away = distance.is_some_and(|d| d > t.away_m) && speed < t.still_mps;
+                let away = now_s >= self.locked_until && distance.is_some_and(|d| d > t.away_m) && speed < t.still_mps;
                 if !away {
                     self.away_since = None;
                 } else {
@@ -117,6 +127,7 @@ mod tests {
 
     fn obs(on: bool, controller: Vec3, speed: f32, hand: Option<Vec3>) -> Observation {
         Observation {
+            force_controller: false,
             controller_known: true,
             controller_on: on,
             controller_position: Some(controller),
@@ -187,6 +198,29 @@ mod tests {
         for i in 1..50 {
             assert_eq!(s.update(i as f64 * 0.1, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Leap);
         }
+    }
+
+    #[test]
+    fn hand_back_locks_out_the_next_take_over() {
+        let mut s = Switch::new(Thresholds::default());
+        let far = Some(Vec3::new(0.5, 0.0, 0.0));
+        assert_eq!(s.update(0.0, &obs(false, Vec3::ZERO, 0.0, far)), Driver::Leap);
+        assert_eq!(s.update(1.0, &obs(true, Vec3::ZERO, 0.6, far)), Driver::Controller); // picked up
+        assert_eq!(s.update(1.2, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Controller); // brief pause
+        assert_eq!(s.update(1.5, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Controller);
+        assert_eq!(s.update(2.3, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Controller); // lockout over, timer starts
+        assert_eq!(s.update(2.5, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Leap);
+    }
+
+    #[test]
+    fn forced_controller_wins() {
+        let mut s = Switch::new(Thresholds::default());
+        let far = Some(Vec3::new(0.5, 0.0, 0.0));
+        assert_eq!(s.update(0.0, &obs(false, Vec3::ZERO, 0.0, far)), Driver::Leap);
+        let mut o = obs(true, Vec3::ZERO, 0.0, far);
+        o.force_controller = true;
+        assert_eq!(s.update(1.0, &o), Driver::Controller);
+        assert_eq!(s.update(5.0, &o), Driver::Controller);
     }
 
     #[test]
