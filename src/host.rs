@@ -18,6 +18,7 @@ pub const TRACKING_RESULT_UNINITIALIZED: i32 = 1;
 pub const TRACKING_RESULT_RUNNING_OK: i32 = 200;
 pub const TRACKING_RESULT_OUT_OF_RANGE: i32 = 201;
 pub const SKELETAL_TRACKING_FULL: i32 = 2;
+pub const SKELETAL_MOTION_RANGE_WITH_CONTROLLER: i32 = 0;
 pub const SKELETAL_MOTION_RANGE_WITHOUT_CONTROLLER: i32 = 1;
 pub const MAX_TRACKED_DEVICE_COUNT: usize = 64;
 
@@ -138,6 +139,7 @@ impl Default for TrackedDevicePose {
     }
 }
 
+#[cfg(not(feature = "host-stubs"))]
 pub mod ffi {
     use std::ffi::{c_char, c_void};
 
@@ -159,6 +161,35 @@ pub mod ffi {
         pub fn lfh_settings_bool(section: *const c_char, key: *const c_char, fallback: bool) -> bool;
         pub fn lfh_settings_float(section: *const c_char, key: *const c_char, fallback: f32) -> f32;
     }
+}
+
+/// Stand-ins for `cargo test` on the build host, where there is no vrserver and no shim.
+#[cfg(feature = "host-stubs")]
+#[allow(clippy::missing_safety_doc)]
+pub mod ffi {
+    use std::ffi::{c_char, c_void};
+
+    pub unsafe fn lfh_layout(driver_pose: *mut u32, tracked_pose: *mut u32, bone_transform: *mut u32) {
+        *driver_pose = std::mem::size_of::<super::DriverPose>() as u32;
+        *tracked_pose = std::mem::size_of::<super::TrackedDevicePose>() as u32;
+        *bone_transform = std::mem::size_of::<super::BoneTransform>() as u32;
+    }
+    pub unsafe fn lfh_log(msg: *const c_char) {
+        eprintln!("{}", std::ffi::CStr::from_ptr(msg).to_string_lossy());
+    }
+    pub unsafe fn lfh_tracked_device_added(_: *const c_char, _: i32, _: u32) -> bool { true }
+    pub unsafe fn lfh_pose_updated(_: u32, _: *const c_void) {}
+    pub unsafe fn lfh_get_raw_poses(_: f32, _: *mut c_void, _: u32) {}
+    pub unsafe fn lfh_prop_container(_: u32) -> u64 { 0 }
+    pub unsafe fn lfh_set_prop_string(_: u64, _: i32, _: *const c_char) -> i32 { 0 }
+    pub unsafe fn lfh_set_prop_int32(_: u64, _: i32, _: i32) -> i32 { 0 }
+    pub unsafe fn lfh_set_prop_bool(_: u64, _: i32, _: bool) -> i32 { 0 }
+    pub unsafe fn lfh_get_prop_int32(_: u64, _: i32, _: *mut i32) -> i32 { 1 }
+    pub unsafe fn lfh_get_prop_string(_: u64, _: i32, _: *mut c_char, _: u32, _: *mut i32) -> u32 { 0 }
+    pub unsafe fn lfh_create_skeleton_component(_: u64, _: *const c_char, _: *const c_char, _: *const c_char, _: i32, _: *mut u64) -> i32 { 0 }
+    pub unsafe fn lfh_update_skeleton(_: u64, _: i32, _: *const c_void, _: u32) -> i32 { 0 }
+    pub unsafe fn lfh_settings_bool(_: *const c_char, _: *const c_char, fallback: bool) -> bool { fallback }
+    pub unsafe fn lfh_settings_float(_: *const c_char, _: *const c_char, fallback: f32) -> f32 { fallback }
 }
 
 /// Compares the shim's struct sizes with ours; a mismatch means the header and the mirrors
@@ -256,9 +287,9 @@ impl Properties {
     }
 }
 
-pub fn update_skeleton(handle: u64, bones: &[BoneTransform]) -> i32 {
+pub fn update_skeleton(handle: u64, motion_range: i32, bones: &[BoneTransform]) -> i32 {
     // SAFETY: BoneTransform mirrors vr::VRBoneTransform_t (checked at init).
-    unsafe { ffi::lfh_update_skeleton(handle, SKELETAL_MOTION_RANGE_WITHOUT_CONTROLLER, bones.as_ptr() as *const _, bones.len() as u32) }
+    unsafe { ffi::lfh_update_skeleton(handle, motion_range, bones.as_ptr() as *const _, bones.len() as u32) }
 }
 
 pub fn setting_bool(key: &str, fallback: bool) -> bool {

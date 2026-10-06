@@ -5,22 +5,37 @@
 //! latches the driver off (both hands stay reported disconnected) instead of aborting vrserver,
 //! which a panic crossing `extern "C"` would do.
 
+mod controllers;
 mod hand;
 mod host;
+mod leap;
 mod log;
+mod math;
 
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
+use controllers::Controllers;
+use glam::Vec3;
 use hand::Hand;
+use host::TrackedDevicePose;
 use log::log;
+use math::Offsets;
 
 static DISABLED: AtomicBool = AtomicBool::new(false);
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 
+/// A sample older than this is a hand the Leap no longer sees.
+const STALE_US: i64 = 300_000;
+
 struct State {
     hands: [Hand; 2],
+    controllers: Controllers,
+    #[cfg(not(feature = "host-stubs"))]
+    leap: leap::Leap,
+    poses: Vec<TrackedDevicePose>,
+    offsets: Offsets,
     debug_panic_pending: bool,
 }
 
@@ -46,6 +61,21 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> Option<T> {
     guard.as_mut().map(f)
 }
 
+fn read_offsets() -> Offsets {
+    Offsets {
+        position: Vec3::new(
+            host::setting_float("handOffsetX", 0.0),
+            host::setting_float("handOffsetY", 0.0),
+            host::setting_float("handOffsetZ", -0.08),
+        ),
+        rotation_degrees: Vec3::new(
+            host::setting_float("rotationOffsetX", 0.0),
+            host::setting_float("rotationOffsetY", 0.0),
+            host::setting_float("rotationOffsetZ", 0.0),
+        ),
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn lf_init() -> i32 {
     guard("init", host::INIT_ERROR_DRIVER_FAILED, || {
@@ -59,9 +89,18 @@ pub extern "C" fn lf_init() -> i32 {
                 log!("TrackedDeviceAdded refused {}", hand.serial());
             }
         }
-        let debug_panic_pending = host::setting_bool("debugPanic", false);
-        *STATE.lock().unwrap() = Some(State { hands, debug_panic_pending });
-        log!("init: version {}, two hands registered", env!("CARGO_PKG_VERSION"));
+        let offsets = read_offsets();
+        let state = State {
+            hands,
+            controllers: Controllers::new(),
+            #[cfg(not(feature = "host-stubs"))]
+            leap: leap::Leap::start(),
+            poses: vec![TrackedDevicePose::default(); host::MAX_TRACKED_DEVICE_COUNT],
+            offsets,
+            debug_panic_pending: host::setting_bool("debugPanic", false),
+        };
+        *STATE.lock().unwrap() = Some(state);
+        log!("init: version {}, two hands registered, offsets {:?}", env!("CARGO_PKG_VERSION"), offsets);
         host::INIT_ERROR_NONE
     })
 }
@@ -70,7 +109,7 @@ pub extern "C" fn lf_init() -> i32 {
 pub extern "C" fn lf_cleanup() {
     guard("cleanup", (), || {
         if let Ok(mut state) = STATE.lock() {
-            *state = None;
+            *state = None; // drops the Leap thread
         }
         log!("cleanup");
     })
@@ -82,18 +121,45 @@ pub extern "C" fn lf_run_frame() {
         with_state(|state| {
             if DISABLED.load(Ordering::SeqCst) {
                 for hand in &mut state.hands {
-                    hand.pose = host::DriverPose::disconnected();
+                    hand.update(false, None, None, &state.offsets);
+                    hand.publish();
                 }
-            } else if state.debug_panic_pending {
+                return;
+            }
+            if state.debug_panic_pending {
                 // DEBUG: proves the guard on a live SteamVR; driver_leapfrog.debugPanic in steamvr.vrsettings.
                 state.debug_panic_pending = false;
                 panic!("debugPanic requested");
             }
-            for hand in &state.hands {
-                hand.publish();
-            }
+            state.frame();
         });
     })
+}
+
+impl State {
+    fn frame(&mut self) {
+        #[cfg(not(feature = "host-stubs"))]
+        let (left, right) = self.leap.snapshot();
+        #[cfg(feature = "host-stubs")]
+        let (left, right): (Option<leap::HandSample>, Option<leap::HandSample>) = (None, None);
+        let now = leap::now_us();
+        let fresh = |s: Option<leap::HandSample>| s.filter(|s| now - s.timestamp_us < STALE_US);
+        let samples = [fresh(left), fresh(right)];
+
+        // The head where it was when the Leap frame was taken; the same call serves the
+        // controllers' power state.
+        let age_s = samples.iter().flatten().map(|s| (now - s.timestamp_us) as f32 * 1e-6).fold(0.0, f32::max);
+        host::raw_poses(-age_s, &mut self.poses);
+        let own = [self.hands[0].object_id, self.hands[1].object_id];
+        self.controllers.update(&self.poses, own);
+        let head = self.poses.first().copied();
+
+        for (i, hand) in self.hands.iter_mut().enumerate() {
+            let connected = !self.controllers.connected(i as u32, &self.poses);
+            hand.update(connected, samples[i].as_ref(), head.as_ref(), &self.offsets);
+            hand.publish();
+        }
+    }
 }
 
 fn with_hand<T>(index: u32, fallback: T, f: impl FnOnce(&mut Hand) -> T) -> T {
@@ -122,7 +188,7 @@ pub extern "C" fn lf_hand_enter_standby(_hand: u32) {}
 #[no_mangle]
 pub unsafe extern "C" fn lf_hand_get_pose(hand: u32, pose_out: *mut host::DriverPose) {
     guard("hand_get_pose", (), || {
-        let pose = with_hand(hand, host::DriverPose::disconnected(), |h| h.pose);
+        let pose = with_hand(hand, host::DriverPose::disconnected(), |h| h.pose());
         if !pose_out.is_null() {
             // SAFETY: the caller's contract above.
             unsafe { pose_out.write(pose) };

@@ -10,6 +10,12 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+leap-sys = "0.2"
+glam = "0.29"
+
+[features]
+# cargo test on the build host: stubs instead of the shim and LeapC
+host-stubs = []
 
 [build-dependencies]
 cc = "1"

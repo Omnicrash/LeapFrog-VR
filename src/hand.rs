@@ -1,19 +1,31 @@
-//! One Leap hand as a SteamVR device: pose + Full skeleton, no buttons. This iteration only
-//! registers the device and keeps it reported disconnected; poses and bones come next.
+//! One Leap hand as a SteamVR device: pose + Full skeleton, no buttons.
 
-use crate::host::{self, prop, DriverPose, Properties};
+use glam::Vec3;
+
+use crate::host::{self, prop, BoneTransform, DriverPose, Properties, Quaternion, TrackedDevicePose};
+use crate::leap::HandSample;
 use crate::log::log;
+use crate::math::{self, HandFrame, Head, Offsets, BONE_COUNT};
 
 pub struct Hand {
     pub index: u32,
     pub object_id: Option<u32>,
-    pub skeleton: Option<u64>,
-    pub pose: DriverPose,
+    skeleton: Option<u64>,
+    pose: DriverPose,
+    bones: [BoneTransform; BONE_COUNT],
+    was_connected: bool,
 }
 
 impl Hand {
     pub fn new(index: u32) -> Hand {
-        Hand { index, object_id: None, skeleton: None, pose: DriverPose::disconnected() }
+        Hand {
+            index,
+            object_id: None,
+            skeleton: None,
+            pose: DriverPose::disconnected(),
+            bones: math::open_hand(index == host::HAND_LEFT),
+            was_connected: false,
+        }
     }
 
     pub fn is_left(&self) -> bool {
@@ -26,6 +38,10 @@ impl Hand {
 
     pub fn serial(&self) -> String {
         format!("LeapFrog_{}", if self.is_left() { "Left" } else { "Right" })
+    }
+
+    pub fn pose(&self) -> DriverPose {
+        self.pose
     }
 
     /// vrserver gives the device its index; properties and components are set up here.
@@ -69,10 +85,54 @@ impl Hand {
         self.skeleton = None;
     }
 
+    /// One frame: connected while the controller is off; a pose when the Leap sees the hand.
+    pub fn update(&mut self, connected: bool, sample: Option<&HandSample>, head: Option<&TrackedDevicePose>, offsets: &Offsets) {
+        if connected != self.was_connected {
+            self.was_connected = connected;
+            log!("{} hand {}", self.side(), if connected { "takes over (controller off)" } else { "steps back (controller on)" });
+        }
+        if !connected {
+            self.pose = DriverPose::disconnected();
+            return;
+        }
+        let mut pose = DriverPose::disconnected();
+        pose.device_is_connected = true;
+        match (sample, head) {
+            (Some(sample), Some(head)) if head.pose_is_valid => {
+                let frame = HandFrame::new(sample, self.is_left());
+                let (world_rotation, world_translation, rotation, position) = frame.pose(&Head::from_pose(head), offsets);
+                pose.world_from_driver_rotation = quat(world_rotation);
+                pose.world_from_driver_translation = vec(world_translation);
+                pose.rotation = quat(rotation);
+                pose.position = vec(position);
+                pose.pose_is_valid = true;
+                pose.result = host::TRACKING_RESULT_RUNNING_OK;
+                frame.skeleton(&mut self.bones);
+                if let Some(handle) = self.skeleton {
+                    host::update_skeleton(handle, host::SKELETAL_MOTION_RANGE_WITHOUT_CONTROLLER, &self.bones);
+                    host::update_skeleton(handle, host::SKELETAL_MOTION_RANGE_WITH_CONTROLLER, &self.bones);
+                }
+            }
+            _ => {
+                pose.pose_is_valid = false;
+                pose.result = host::TRACKING_RESULT_OUT_OF_RANGE;
+            }
+        }
+        self.pose = pose;
+    }
+
     /// Sends the current pose; called once per RunFrame.
     pub fn publish(&self) {
         if let Some(id) = self.object_id {
             host::pose_updated(id, &self.pose);
         }
     }
+}
+
+fn quat(q: glam::Quat) -> Quaternion {
+    Quaternion { w: q.w as f64, x: q.x as f64, y: q.y as f64, z: q.z as f64 }
+}
+
+fn vec(v: Vec3) -> [f64; 3] {
+    [v.x as f64, v.y as f64, v.z as f64]
 }
