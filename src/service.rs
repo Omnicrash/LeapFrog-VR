@@ -7,7 +7,11 @@ use crate::log::log;
 
 #[cfg(all(windows, not(feature = "host-stubs")))]
 mod win {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
     use std::time::{Duration, Instant};
+
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ};
 
     use windows_sys::Win32::Foundation::{ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_NOT_ACTIVE, GetLastError};
     use windows_sys::Win32::System::Services::*;
@@ -69,16 +73,68 @@ mod win {
     }
 }
 
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// The service's own control tool, next to LeapSvc.exe (from the service's ImagePath).
+    fn leapctl() -> Result<String, String> {
+        let key = wide(r"SYSTEM\CurrentControlSet\Services\UltraleapTracking");
+        let value = wide("ImagePath");
+        let mut buf = [0u16; 1024];
+        let mut size = (buf.len() * 2) as u32;
+        // SAFETY: buffer and size passed together; RegGetValueW null-terminates REG_SZ data.
+        let status = unsafe {
+            RegGetValueW(HKEY_LOCAL_MACHINE, key.as_ptr(), value.as_ptr(), RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
+                std::ptr::null_mut(), buf.as_mut_ptr() as *mut _, &mut size)
+        };
+        if status != 0 {
+            return Err(format!("service not installed (registry error {status})"));
+        }
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        let image = String::from_utf16_lossy(&buf[..end]);
+        let image = image.trim_matches('"');
+        match image.find("LeapSvc.exe") {
+            Some(i) => Ok(format!("{}leapctl.exe", &image[..i])),
+            None => Err(format!("unexpected service path {image}")),
+        }
+    }
+
+    /// `leapctl config tracking resume|pause`: the saved pause state of the service. LeapSetPause
+    /// from the SDK reports success and changes nothing on Gemini 5.20.
+    pub fn tracking(state: &str) -> Result<i32, String> {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let tool = leapctl()?;
+        let status = Command::new(&tool)
+            .args(["config", "tracking", state])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .map_err(|e| format!("could not run {tool}: {e}"))?;
+        Ok(status.code().unwrap_or(-1))
+    }
+}
+
 #[cfg(not(all(windows, not(feature = "host-stubs"))))]
 mod win {
     pub fn set(_run: bool) -> Result<bool, u32> {
         Ok(true)
+    }
+
+    pub fn tracking(_state: &str) -> Result<i32, String> {
+        Ok(0)
     }
 }
 
 #[cfg_attr(feature = "host-stubs", allow(dead_code))]
 pub fn start() {
     report("start", win::set(true));
+    // A pause left behind (the old helper paused at every SteamVR exit) survives restarts and
+    // means a running service with no hands, so every start resumes.
+    match win::tracking("resume") {
+        Ok(0) => log!("Leap tracking resumed"),
+        Ok(code) => log!("Leap tracking resume: leapctl exit {code}"),
+        Err(why) => log!("Leap tracking resume skipped: {why}"),
+    }
 }
 
 pub fn stop() {
