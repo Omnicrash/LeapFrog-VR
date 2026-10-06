@@ -13,6 +13,7 @@ pub struct Hand {
     skeleton: Option<u64>,
     pose: DriverPose,
     bones: [BoneTransform; BONE_COUNT],
+    candidate: Option<DriverPose>,
     was_connected: bool,
 }
 
@@ -24,6 +25,7 @@ impl Hand {
             skeleton: None,
             pose: DriverPose::disconnected(),
             bones: math::open_hand(index == host::HAND_LEFT),
+            candidate: None,
             was_connected: false,
         }
     }
@@ -103,40 +105,55 @@ impl Hand {
         self.skeleton = None;
     }
 
-    /// One frame: connected while the controller is off; a pose when the Leap sees the hand.
-    pub fn update(&mut self, connected: bool, sample: Option<&HandSample>, head: Option<&TrackedDevicePose>, offsets: &Offsets) {
+    /// Step one of a frame: where the Leap sees this hand, in world space, with the pose and
+    /// bones computed and held back until `apply` decides whether this device drives the hand.
+    pub fn locate(&mut self, sample: Option<&HandSample>, head: Option<&TrackedDevicePose>, offsets: &Offsets) -> Option<Vec3> {
+        self.candidate = None;
+        let (sample, head) = (sample?, head?);
+        if !head.pose_is_valid {
+            return None;
+        }
+        let frame = HandFrame::new(sample, self.is_left());
+        let (world_rotation, world_translation, rotation, position) = frame.pose(&Head::from_pose(head), offsets);
+        let mut pose = DriverPose::disconnected();
+        pose.device_is_connected = true;
+        pose.world_from_driver_rotation = quat(world_rotation);
+        pose.world_from_driver_translation = vec(world_translation);
+        pose.rotation = quat(rotation);
+        pose.position = vec(position);
+        pose.pose_is_valid = true;
+        pose.result = host::TRACKING_RESULT_RUNNING_OK;
+        frame.skeleton(&mut self.bones);
+        self.candidate = Some(pose);
+        Some(world_rotation * position + world_translation)
+    }
+
+    /// Step two: connected while this device drives the hand; the located pose if there is one,
+    /// out of range otherwise.
+    pub fn apply(&mut self, connected: bool) {
         if connected != self.was_connected {
             self.was_connected = connected;
-            log!("{} hand {}", self.side(), if connected { "takes over (controller off)" } else { "steps back (controller on)" });
+            log!("{} hand {}", self.side(), if connected { "takes over" } else { "steps back" });
         }
         if !connected {
             self.pose = DriverPose::disconnected();
             return;
         }
-        let mut pose = DriverPose::disconnected();
-        pose.device_is_connected = true;
-        match (sample, head) {
-            (Some(sample), Some(head)) if head.pose_is_valid => {
-                let frame = HandFrame::new(sample, self.is_left());
-                let (world_rotation, world_translation, rotation, position) = frame.pose(&Head::from_pose(head), offsets);
-                pose.world_from_driver_rotation = quat(world_rotation);
-                pose.world_from_driver_translation = vec(world_translation);
-                pose.rotation = quat(rotation);
-                pose.position = vec(position);
-                pose.pose_is_valid = true;
-                pose.result = host::TRACKING_RESULT_RUNNING_OK;
-                frame.skeleton(&mut self.bones);
+        match self.candidate {
+            Some(pose) => {
+                self.pose = pose;
                 if let Some(handle) = self.skeleton {
                     host::update_skeleton(handle, host::SKELETAL_MOTION_RANGE_WITHOUT_CONTROLLER, &self.bones);
                     host::update_skeleton(handle, host::SKELETAL_MOTION_RANGE_WITH_CONTROLLER, &self.bones);
                 }
             }
-            _ => {
-                pose.pose_is_valid = false;
+            None => {
+                let mut pose = DriverPose::disconnected();
+                pose.device_is_connected = true;
                 pose.result = host::TRACKING_RESULT_OUT_OF_RANGE;
+                self.pose = pose;
             }
         }
-        self.pose = pose;
     }
 
     /// Sends the current pose; called once per RunFrame.

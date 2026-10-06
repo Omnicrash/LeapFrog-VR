@@ -7,6 +7,11 @@
     "handOffsetZ": -0.08,
     "rotationOffsetX": 0.0,
     "rotationOffsetY": 0.0,
-    "rotationOffsetZ": 0.0
+    "rotationOffsetZ": 0.0,
+    "pickupSwitching": true,
+    "awayDistance": 0.20,
+    "awayTime": 0.5,
+    "stillSpeed": 0.15,
+    "pickupSpeed": 0.4
   }
 }

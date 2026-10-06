@@ -11,6 +11,7 @@ mod host;
 mod leap;
 mod log;
 mod math;
+mod switching;
 
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,6 +23,7 @@ use hand::Hand;
 use host::TrackedDevicePose;
 use log::log;
 use math::Offsets;
+use switching::{Driver, Observation, Switch, Thresholds};
 
 static DISABLED: AtomicBool = AtomicBool::new(false);
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -35,6 +37,7 @@ struct State {
     #[cfg(not(feature = "host-stubs"))]
     leap: leap::Leap,
     poses: Vec<TrackedDevicePose>,
+    switches: [Switch; 2],
     offsets: Offsets,
     debug_panic_pending: bool,
 }
@@ -59,6 +62,16 @@ fn guard<T>(name: &str, fallback: T, f: impl FnOnce() -> T) -> T {
 fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> Option<T> {
     let mut guard = STATE.lock().ok()?;
     guard.as_mut().map(f)
+}
+
+fn read_thresholds() -> Thresholds {
+    let d = Thresholds::default();
+    Thresholds {
+        away_m: host::setting_float("awayDistance", d.away_m),
+        away_s: host::setting_float("awayTime", d.away_s),
+        still_mps: host::setting_float("stillSpeed", d.still_mps),
+        pickup_mps: host::setting_float("pickupSpeed", d.pickup_mps),
+    }
 }
 
 fn read_offsets() -> Offsets {
@@ -90,17 +103,24 @@ pub extern "C" fn lf_init() -> i32 {
             }
         }
         let offsets = read_offsets();
+        // pickupSwitching off = stage 1 behavior, the controller's power alone decides.
+        let thresholds = if host::setting_bool("pickupSwitching", true) {
+            read_thresholds()
+        } else {
+            Thresholds { away_m: f32::INFINITY, ..Thresholds::default() }
+        };
         let state = State {
             hands,
             controllers: Controllers::new(),
             #[cfg(not(feature = "host-stubs"))]
             leap: leap::Leap::start(),
             poses: vec![TrackedDevicePose::default(); host::MAX_TRACKED_DEVICE_COUNT],
+            switches: [Switch::new(thresholds), Switch::new(thresholds)],
             offsets,
             debug_panic_pending: host::setting_bool("debugPanic", false),
         };
         *STATE.lock().unwrap() = Some(state);
-        log!("init: version {}, two hands registered, offsets {:?}", env!("CARGO_PKG_VERSION"), offsets);
+        log!("init: version {}, two hands registered, offsets {:?}, switching {:?}", env!("CARGO_PKG_VERSION"), offsets, thresholds);
         host::INIT_ERROR_NONE
     })
 }
@@ -121,7 +141,7 @@ pub extern "C" fn lf_run_frame() {
         with_state(|state| {
             if DISABLED.load(Ordering::SeqCst) {
                 for hand in &mut state.hands {
-                    hand.update(false, None, None, &state.offsets);
+                    hand.apply(false);
                     hand.publish();
                 }
                 return;
@@ -153,10 +173,22 @@ impl State {
         let own = [self.hands[0].object_id, self.hands[1].object_id];
         self.controllers.update(&self.poses, own);
         let head = self.poses.first().copied();
+        let now_s = now as f64 * 1e-6;
 
         for (i, hand) in self.hands.iter_mut().enumerate() {
-            let connected = !self.controllers.connected(i as u32, &self.poses);
-            hand.update(connected, samples[i].as_ref(), head.as_ref(), &self.offsets);
+            let hand_position = hand.locate(samples[i].as_ref(), head.as_ref(), &self.offsets);
+            let controller = self.controllers.pose(i as u32, &self.poses);
+            let observation = Observation {
+                controller_on: controller.map(|c| c.device_is_connected).unwrap_or(false),
+                controller_position: controller.filter(|c| c.pose_is_valid).map(|c| {
+                    let m = &c.device_to_absolute_tracking;
+                    Vec3::new(m[0][3], m[1][3], m[2][3])
+                }),
+                controller_velocity: controller.map(|c| Vec3::from(c.velocity)).unwrap_or(Vec3::ZERO),
+                hand_position,
+            };
+            let driver = self.switches[i].update(now_s, &observation);
+            hand.apply(driver == Driver::Leap);
             hand.publish();
         }
     }

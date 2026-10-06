@@ -24,12 +24,9 @@ impl Controllers {
         }
     }
 
-    /// Whether the controller for this hand is powered on (connected), as far as SteamVR knows.
-    pub fn connected(&self, hand: u32, poses: &[TrackedDevicePose]) -> bool {
-        self.index[hand as usize]
-            .and_then(|i| poses.get(i as usize))
-            .map(|p| p.device_is_connected)
-            .unwrap_or(false)
+    /// This hand's controller in this frame's raw poses, once found.
+    pub fn pose<'a>(&self, hand: u32, poses: &'a [TrackedDevicePose]) -> Option<&'a TrackedDevicePose> {
+        self.index[hand as usize].and_then(|i| poses.get(i as usize))
     }
 
     fn scan(&mut self, poses: &[TrackedDevicePose], own: [Option<u32>; 2]) {

@@ -15,6 +15,7 @@ pub fn now_us() -> i64 {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)] // next_joint: fingertips, for later
 pub struct Bone {
     pub prev_joint: [f32; 3],
     pub next_joint: [f32; 3],
