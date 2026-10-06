@@ -6,8 +6,8 @@
 //! - a lost connection (service stopped or restarted) gets a fresh connection too.
 //!
 //! The connection is multi-device aware and subscribes to each camera, which is what the service
-//! requires before it accepts tracking hints (`trackingHint`, a comma-separated set; default
-//! `ultra_performance_mode,hand_on_object`; unknown hints are ignored by the service).
+//! requires before it accepts tracking hints (a comma-separated set built from the settings in
+//! `lib.rs`; unknown hints are ignored by the service).
 
 #[cfg(not(feature = "host-stubs"))]
 use leap_sys as sys;

@@ -68,6 +68,26 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> Option<T> {
     guard.as_mut().map(f)
 }
 
+/// The Ultraleap tracking hints from the settings: one performance mode (an axis, so a single
+/// choice) plus independent flags. Gemini 5.20 knows exactly these four hint strings.
+fn tracking_hints() -> Option<String> {
+    let mut hints: Vec<&str> = Vec::new();
+    let performance = host::setting_string("trackingPerformance", "ultra");
+    match performance.as_str() {
+        "ultra" => hints.push("ultra_performance_mode"),
+        "low" => hints.push("low_resource_usage"),
+        "default" => {}
+        other => log!("trackingPerformance \"{other}\" unknown (ultra, low, default); using the service default"),
+    }
+    if host::setting_bool("handOnObject", true) {
+        hints.push("hand_on_object");
+    }
+    if host::setting_bool("fastHandMotion", false) {
+        hints.push("fast_hand_motion");
+    }
+    (!hints.is_empty()).then(|| hints.join(","))
+}
+
 fn read_thresholds() -> Thresholds {
     let d = Thresholds::default();
     Thresholds {
@@ -116,7 +136,7 @@ pub extern "C" fn lf_init() -> i32 {
             #[cfg(not(feature = "host-stubs"))]
             leap: leap::Leap::start(leap::Config {
                 manage_service: host::setting_bool("manageService", true),
-                hint: Some(host::setting_string("trackingHint", "ultra_performance_mode,hand_on_object")).filter(|h| !h.is_empty()),
+                hint: tracking_hints(),
             }),
             poses: vec![TrackedDevicePose::default(); host::MAX_TRACKED_DEVICE_COUNT],
             switches: [Switch::new(thresholds), Switch::new(thresholds)],
