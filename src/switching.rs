@@ -2,9 +2,10 @@
 //! logic over positions and velocities, so it can be tested without SteamVR.
 //!
 //! Put down: the Leap sees the hand clearly away from the controller (farther than `away_m`)
-//! while the controller lies still, for `away_s`. Pick up: the controller moves clearly
-//! (faster than `pickup_mps`), or the Leap sees the hand at the controller (closer than
-//! `near_m`). A controller that is off is always "put down"; one that has just been found
+//! while the controller lies still, for `away_s` (short: it only has to ride out a mis-tracked
+//! frame). Pick up: the controller moves clearly (faster than `pickup_mps`), or the Leap sees the
+//! hand at the controller (closer than `near_m`; the wrist sits a hand's length from the
+//! controller's tracked origin, and the head offset guess adds error, so this is generous). A controller that is off is always "put down"; one that has just been found
 //! powered on is taken to be in use.
 
 use glam::Vec3;
@@ -26,7 +27,7 @@ pub struct Thresholds {
 
 impl Default for Thresholds {
     fn default() -> Thresholds {
-        Thresholds { away_m: 0.20, near_m: 0.10, away_s: 0.5, still_mps: 0.15, pickup_mps: 0.4 }
+        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 0.1, still_mps: 0.15, pickup_mps: 0.4 }
     }
 }
 
@@ -121,7 +122,7 @@ mod tests {
 
     #[test]
     fn put_down_needs_distance_stillness_and_time() {
-        let mut s = Switch::new(Thresholds::default());
+        let mut s = Switch::new(Thresholds { away_s: 0.5, ..Thresholds::default() });
         let far = Some(Vec3::new(0.5, 0.0, 0.0));
         assert_eq!(s.update(0.0, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Controller);
         assert_eq!(s.update(0.3, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Controller);
