@@ -66,7 +66,25 @@ impl Hand {
             // Virtual Desktop's hand type: pose + skeleton only, and VRChat ships a binding for it.
             .set_string(prop::CONTROLLER_TYPE, "vd_hand_controller");
 
+        // Render model and status icons from Leapify (MIT): the model is a small axes gizmo at
+        // the wrist, handy for tuning the offsets, and nothing like a controller in the hand.
         let side = self.side();
+        props.set_string(prop::RENDER_MODEL_NAME, &format!("{{leapfrog}}leapfrog_hand_{side}"));
+        let icons = [
+            (prop::ICON_OFF, "off"),
+            (prop::ICON_SEARCHING, "standby"),
+            (prop::ICON_SEARCHING_ALERT, "standby_alert"),
+            (prop::ICON_READY, "ready"),
+            (prop::ICON_READY_ALERT, "ready_alert"),
+            (prop::ICON_NOT_READY, "error"),
+            (prop::ICON_STANDBY, "standby"),
+            (prop::ICON_ALERT_LOW, "ready_alert"),
+            (prop::ICON_STANDBY_ALERT, "standby_alert"),
+        ];
+        for (prop, name) in icons {
+            props.set_string(prop, &format!("{{leapfrog}}/icons/{side}_hand_status_{name}.png"));
+        }
+
         self.skeleton = props.create_skeleton(
             &format!("/input/skeleton/{side}"),
             &format!("/skeleton/hand/{side}"),

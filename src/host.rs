@@ -26,6 +26,7 @@ pub mod prop {
     pub const TRACKING_SYSTEM_NAME: i32 = 1000;
     pub const MODEL_NUMBER: i32 = 1001;
     pub const SERIAL_NUMBER: i32 = 1002;
+    pub const RENDER_MODEL_NAME: i32 = 1003;
     pub const WILL_DRIFT_IN_YAW: i32 = 1004;
     pub const MANUFACTURER_NAME: i32 = 1005;
     pub const DEVICE_IS_WIRELESS: i32 = 1010;
@@ -35,6 +36,15 @@ pub mod prop {
     pub const INPUT_PROFILE_PATH: i32 = 1037;
     pub const IDENTIFIABLE: i32 = 1043;
     pub const CONTROLLER_ROLE_HINT: i32 = 3007;
+    pub const ICON_OFF: i32 = 5001;
+    pub const ICON_SEARCHING: i32 = 5002;
+    pub const ICON_SEARCHING_ALERT: i32 = 5003;
+    pub const ICON_READY: i32 = 5004;
+    pub const ICON_READY_ALERT: i32 = 5005;
+    pub const ICON_NOT_READY: i32 = 5006;
+    pub const ICON_STANDBY: i32 = 5007;
+    pub const ICON_ALERT_LOW: i32 = 5008;
+    pub const ICON_STANDBY_ALERT: i32 = 5009;
     pub const CONTROLLER_TYPE: i32 = 7000;
     pub const CONTROLLER_HAND_SELECTION_PRIORITY: i32 = 7002;
 }
