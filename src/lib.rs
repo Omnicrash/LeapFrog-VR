@@ -94,7 +94,7 @@ fn read_offsets() -> Offsets {
             host::setting_float("rotationOffsetY", 0.0),
             host::setting_float("rotationOffsetZ", 0.0),
         ),
-        inward: host::setting_float("handInwardOffset", 0.0),
+        inward: host::setting_float("handInwardOffset", 0.01),
     }
 }
 
