@@ -11,6 +11,7 @@
     "rotationOffsetX": 0.0,
     "rotationOffsetY": 0.0,
     "rotationOffsetZ": 0.0,
+    "handInwardOffset": 0.0,
     "pickupSwitching": true,
     "awayDistance": 0.20,
     "nearDistance": 0.15,

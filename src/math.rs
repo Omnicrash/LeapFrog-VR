@@ -125,11 +125,13 @@ fn trs(t: Vec3, r: Quat) -> Mat4 {
     Mat4::from_translation(t) * Mat4::from_quat(r)
 }
 
-/// Fixed offsets from the settings file: hand position in meters, rotation in degrees.
-#[derive(Clone, Copy, Debug, Default)]
+/// Offsets from the settings file: hand position in meters (head frame, both hands alike),
+/// rotation in degrees, and an inward shift per hand (meters, toward the other hand).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Offsets {
     pub position: Vec3,
     pub rotation_degrees: Vec3,
+    pub inward: f32,
 }
 
 /// The HMD's raw pose as the driver's world transform.
@@ -201,7 +203,9 @@ impl HandFrame {
     /// World-from-driver = the head; the hand sits in the head's frame.
     pub fn pose(&self, head: &Head, offsets: &Offsets) -> (Quat, Vec3, Quat, Vec3) {
         let world_from_driver = head.rotation * euler_glm(offsets.rotation_degrees * (PI / 180.0));
-        (world_from_driver, head.translation, self.palm_rotation, self.wrist + offsets.position)
+        // Inward is toward the body's midline: +X (right) for the left hand, -X for the right.
+        let inward = Vec3::X * (if self.left { offsets.inward } else { -offsets.inward });
+        (world_from_driver, head.translation, self.palm_rotation, self.wrist + offsets.position + inward)
     }
 
     /// Fills the driven bones of `bones` (an `open_hand` template for this side).

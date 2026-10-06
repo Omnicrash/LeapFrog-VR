@@ -94,6 +94,7 @@ fn read_offsets() -> Offsets {
             host::setting_float("rotationOffsetY", 0.0),
             host::setting_float("rotationOffsetZ", 0.0),
         ),
+        inward: host::setting_float("handInwardOffset", 0.0),
     }
 }
 
@@ -194,6 +195,12 @@ impl State {
         self.frame = self.frame.wrapping_add(1);
         if self.frame % 90 == 0 {
             self.pickup_enabled = host::setting_bool("pickupSwitching", true);
+            // Offsets are live too, so they can be tuned by eye without restarts.
+            let offsets = read_offsets();
+            if offsets != self.offsets {
+                self.offsets = offsets;
+                log!("offsets changed: {offsets:?}");
+            }
             let room_setup = service::process_running("steamvr_room_setup.exe");
             if room_setup != self.room_setup {
                 self.room_setup = room_setup;
