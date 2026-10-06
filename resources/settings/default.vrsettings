@@ -14,7 +14,7 @@
     "pickupSwitching": true,
     "awayDistance": 0.20,
     "nearDistance": 0.12,
-    "awayTime": 0.5,
+    "awayTime": 0.1,
     "unseenTime": 1.5,
     "lockoutTime": 1.0,
     "stillSpeed": 0.08,

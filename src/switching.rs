@@ -31,7 +31,7 @@ pub struct Thresholds {
 
 impl Default for Thresholds {
     fn default() -> Thresholds {
-        Thresholds { away_m: 0.20, near_m: 0.12, away_s: 0.5, unseen_s: 1.5, lockout_s: 1.0, still_mps: 0.08, pickup_mps: 0.4 }
+        Thresholds { away_m: 0.20, near_m: 0.12, away_s: 0.1, unseen_s: 1.5, lockout_s: 1.0, still_mps: 0.08, pickup_mps: 0.4 }
     }
 }
 
@@ -131,8 +131,11 @@ impl Switch {
                 if !away {
                     self.away_since = None;
                 } else {
+                    // Measured from the tracked origin (grip not learned yet) the distance is
+                    // rough, so the delay is at least half a second until then.
+                    let delay = if self.grip_samples >= GRIP_SAMPLES { t.away_s } else { t.away_s.max(0.5) };
                     let since = *self.away_since.get_or_insert(now_s);
-                    if now_s - since >= t.away_s as f64 {
+                    if now_s - since >= delay as f64 {
                         self.state = Driver::Leap;
                         self.away_since = None;
                     }
@@ -260,10 +263,10 @@ mod tests {
         for i in 0..60 {
             assert_eq!(s.update(10.0 + i as f64 * 0.05, &obs(true, Vec3::ZERO, 0.0, wrist)), Driver::Controller);
         }
-        // Put down: hand 25 cm from the grip point.
+        // Put down: hand 25 cm from the grip point; with the grip learned the short delay applies.
         let away = Some(Vec3::new(-0.25, 0.25, 0.0));
         s.update(20.0, &obs(true, Vec3::ZERO, 0.0, away));
-        assert_eq!(s.update(20.6, &obs(true, Vec3::ZERO, 0.0, away)), Driver::Leap);
+        assert_eq!(s.update(20.15, &obs(true, Vec3::ZERO, 0.0, away)), Driver::Leap);
     }
 
     #[test]
