@@ -7,7 +7,8 @@ description = "Minimal SteamVR driver: Ultraleap hands as hand-tracking devices"
 publish = false
 
 [workspace]
-members = ["watchdog", "handmodel"]
+members = ["watchdog"]
+exclude = ["handmodel"]
 
 [lib]
 crate-type = ["cdylib"]

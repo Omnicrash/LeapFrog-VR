@@ -9,7 +9,10 @@ install=0
 if [ "${1:-}" = "--install" ]; then install=1; shift; fi
 
 cargo xwin build --release --workspace "$@"
-cargo run -q -p handmodel --target x86_64-unknown-linux-gnu -- resources/rendermodels
+# The hand models are checked in as results; their generator is local and untracked.
+if [ -f handmodel/Cargo.toml ]; then
+    cargo run -q --manifest-path handmodel/Cargo.toml --target x86_64-unknown-linux-gnu -- resources/rendermodels
+fi
 
 out=dist/leapfrog
 rm -rf "$out"

@@ -4,3 +4,6 @@ out/
 *.user
 target/
 dist/
+# generator of the placeholder hand models and the icon tracer: local, results are tracked
+handmodel/
+tools/outline/
