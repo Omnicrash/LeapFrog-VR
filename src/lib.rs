@@ -70,6 +70,7 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> Option<T> {
 
 /// The Ultraleap tracking hints from the settings: one performance mode (an axis, so a single
 /// choice) plus independent flags. Gemini 5.20 knows exactly these four hint strings.
+#[cfg_attr(feature = "host-stubs", allow(dead_code))]
 fn tracking_hints() -> Option<String> {
     let mut hints: Vec<&str> = Vec::new();
     let performance = host::setting_string("trackingPerformance", "ultra");
