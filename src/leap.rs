@@ -4,6 +4,9 @@
 //! - a connection opened before the service ran comes up once the service does but never gets
 //!   hands: when the connection event arrives late (> 1 s after opening), open a fresh one;
 //! - a lost connection (service stopped or restarted) gets a fresh connection too.
+//!
+//! The connection is multi-device aware and subscribes to each camera, which is what the service
+//! requires before it accepts a tracking hint (`trackingHint`, default `ultra_performance_mode`).
 
 #[cfg(not(feature = "host-stubs"))]
 use leap_sys as sys;
@@ -79,6 +82,19 @@ pub struct Leap {
     thread: Option<JoinHandle<()>>,
 }
 
+/// What the thread needs from the settings.
+#[derive(Clone, Debug)]
+pub struct Config {
+    pub manage_service: bool,
+    pub hint: Option<String>,
+}
+
+// Not in leap-sys 0.2 (its header predates it); Gemini 5.x exports it. `hints` is a
+// null-terminated array of C strings.
+extern "C" {
+    fn LeapSetDeviceHints(connection: sys::LEAP_CONNECTION, device: sys::LEAP_DEVICE, hints: *const *const std::ffi::c_char) -> sys::eLeapRS;
+}
+
 /// LeapC's clock, microseconds; the same clock as the samples' timestamps.
 pub fn now_us() -> i64 {
     // SAFETY: plain call.
@@ -86,12 +102,12 @@ pub fn now_us() -> i64 {
 }
 
 impl Leap {
-    pub fn start() -> Leap {
+    pub fn start(config: Config) -> Leap {
         let frames = Arc::new(Mutex::new(Frames::default()));
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
             let (frames, stop) = (frames.clone(), stop.clone());
-            thread::Builder::new().name("leapfrog-leap".into()).spawn(move || run(frames, stop)).ok()
+            thread::Builder::new().name("leapfrog-leap".into()).spawn(move || run(frames, stop, config)).ok()
         };
         if thread.is_none() {
             log!("could not start the Leap thread");
@@ -117,14 +133,19 @@ impl Drop for Leap {
 }
 
 /// A LEAP_CONNECTION with its lifetime tied to the value.
-pub struct Connection(pub sys::LEAP_CONNECTION);
+pub struct Connection(pub sys::LEAP_CONNECTION, Vec<sys::LEAP_DEVICE>);
 
 impl Connection {
     pub fn open() -> Option<Connection> {
         let mut handle: sys::LEAP_CONNECTION = std::ptr::null_mut();
-        // SAFETY: LeapC API as documented; a null config means defaults.
+        let config = sys::LEAP_CONNECTION_CONFIG {
+            size: std::mem::size_of::<sys::LEAP_CONNECTION_CONFIG>() as u32,
+            flags: sys::_eLeapConnectionConfig_eLeapConnectionConfig_MultiDeviceAware as u32,
+            server_namespace: std::ptr::null(),
+        };
+        // SAFETY: LeapC API as documented.
         unsafe {
-            if sys::LeapCreateConnection(std::ptr::null(), &mut handle) != sys::_eLeapRS_eLeapRS_Success || handle.is_null() {
+            if sys::LeapCreateConnection(&config, &mut handle) != sys::_eLeapRS_eLeapRS_Success || handle.is_null() {
                 return None;
             }
             if sys::LeapOpenConnection(handle) != sys::_eLeapRS_eLeapRS_Success {
@@ -138,14 +159,49 @@ impl Connection {
                 0,
             );
         }
-        Some(Connection(handle))
+        Some(Connection(handle, Vec::new()))
+    }
+
+    /// Opens and subscribes to every camera the service lists, and hands it the hint. Called
+    /// after each Device event; a service that restarted lists its camera without announcing it.
+    pub fn subscribe_all(&mut self, hint: Option<&str>) {
+        let mut refs: [sys::LEAP_DEVICE_REF; 4] = [sys::LEAP_DEVICE_REF { handle: std::ptr::null_mut(), id: 0 }; 4];
+        let mut count = refs.len() as u32;
+        // SAFETY: the array and its length are passed together.
+        if unsafe { sys::LeapGetDeviceList(self.0, refs.as_mut_ptr(), &mut count) } != sys::_eLeapRS_eLeapRS_Success {
+            return;
+        }
+        let hint_c = hint.and_then(|h| std::ffi::CString::new(h).ok());
+        for r in refs.iter().take(count.min(4) as usize) {
+            let mut device: sys::LEAP_DEVICE = std::ptr::null_mut();
+            // SAFETY: LeapC API; the device handle is kept until the connection is dropped.
+            unsafe {
+                if sys::LeapOpenDevice(*r, &mut device) != sys::_eLeapRS_eLeapRS_Success || device.is_null() {
+                    continue;
+                }
+                let subscribed = sys::LeapSubscribeEvents(self.0, device);
+                let hinted = match &hint_c {
+                    Some(h) => {
+                        let hints = [h.as_ptr(), std::ptr::null()];
+                        LeapSetDeviceHints(self.0, device, hints.as_ptr())
+                    }
+                    None => sys::_eLeapRS_eLeapRS_Success,
+                };
+                let id = r.id; // copied out: LEAP_DEVICE_REF is packed
+                log!("Leap: device {id} subscribed ({:#x}), hint {} ({:#x})", subscribed as u32, hint.unwrap_or("none"), hinted as u32);
+            }
+            self.1.push(device);
+        }
     }
 }
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        // SAFETY: the handle came from LeapCreateConnection and is dropped once.
+        // SAFETY: the handles came from LeapOpenDevice / LeapCreateConnection and are dropped once.
         unsafe {
+            for device in self.1.drain(..) {
+                sys::LeapCloseDevice(device);
+            }
             sys::LeapCloseConnection(self.0);
             sys::LeapDestroyConnection(self.0);
         }
@@ -157,15 +213,18 @@ enum Next {
     Reopen(&'static str),
 }
 
-fn run(frames: Arc<Mutex<Frames>>, stop: Arc<AtomicBool>) {
+fn run(frames: Arc<Mutex<Frames>>, stop: Arc<AtomicBool>, config: Config) {
+    if config.manage_service {
+        crate::service::start();
+    }
     let mut was_reopened = false;
     while !stop.load(Ordering::SeqCst) {
-        let Some(connection) = Connection::open() else {
+        let Some(mut connection) = Connection::open() else {
             log!("LeapC connection could not be created; retrying in 2 s");
             sleep_unless_stopped(&stop, Duration::from_secs(2));
             continue;
         };
-        let reason = poll_loop(&connection, &frames, &stop, &mut was_reopened);
+        let reason = poll_loop(&mut connection, &frames, &stop, &mut was_reopened, config.hint.as_deref());
         drop(connection);
         if let Ok(mut f) = frames.lock() {
             *f = Frames::default();
@@ -185,7 +244,7 @@ fn sleep_unless_stopped(stop: &AtomicBool, total: Duration) {
 }
 
 /// Polls one connection until it should be replaced (Some(reason)) or the driver stops (None).
-fn poll_loop(connection: &Connection, frames: &Mutex<Frames>, stop: &AtomicBool, was_reopened: &mut bool) -> Option<&'static str> {
+fn poll_loop(connection: &mut Connection, frames: &Mutex<Frames>, stop: &AtomicBool, was_reopened: &mut bool, hint: Option<&str>) -> Option<&'static str> {
     let opened = Instant::now();
     let mut hands_logged = false;
     while !stop.load(Ordering::SeqCst) {
@@ -221,6 +280,7 @@ fn poll_loop(connection: &Connection, frames: &Mutex<Frames>, stop: &AtomicBool,
                 if let Ok(mut f) = frames.lock() {
                     f.devices += 1;
                 }
+                connection.subscribe_all(hint);
                 Next::Continue
             }
             sys::_eLeapEventType_eLeapEventType_DeviceLost => {
@@ -310,4 +370,4 @@ fn sample_of(hand: &sys::LEAP_HAND, timestamp_us: i64) -> HandSample {
 }
 
 #[cfg(not(feature = "host-stubs"))]
-pub use live::{now_us, Leap};
+pub use live::{now_us, Config, Leap};

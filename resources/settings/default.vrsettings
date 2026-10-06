@@ -2,6 +2,8 @@
   "driver_leapfrog": {
     "enable": true,
     "debugPanic": false,
+    "manageService": true,
+    "trackingHint": "ultra_performance_mode",
     "handOffsetX": 0.0,
     "handOffsetY": 0.0,
     "handOffsetZ": -0.08,

@@ -175,3 +175,15 @@ extern "C" float lfh_settings_float(const char* section, const char* key, float 
     float value = VRSettings()->GetFloat(section, key, &error);
     return error == VRSettingsError_None ? value : fallback;
 }
+
+// Returns the length written (without the terminator), 0 when unset or too long.
+extern "C" uint32_t lfh_settings_string(const char* section, const char* key, char* buf, uint32_t len)
+{
+    EVRSettingsError error = VRSettingsError_None;
+    VRSettings()->GetString(section, key, buf, len, &error);
+    if (error != VRSettingsError_None || len == 0) {
+        return 0;
+    }
+    buf[len - 1] = '\0';
+    return static_cast<uint32_t>(std::strlen(buf));
+}

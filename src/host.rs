@@ -170,6 +170,7 @@ pub mod ffi {
         pub fn lfh_update_skeleton(handle: u64, motion_range: i32, bones: *const c_void, count: u32) -> i32;
         pub fn lfh_settings_bool(section: *const c_char, key: *const c_char, fallback: bool) -> bool;
         pub fn lfh_settings_float(section: *const c_char, key: *const c_char, fallback: f32) -> f32;
+        pub fn lfh_settings_string(section: *const c_char, key: *const c_char, buf: *mut c_char, len: u32) -> u32;
     }
 }
 
@@ -200,6 +201,7 @@ pub mod ffi {
     pub unsafe fn lfh_update_skeleton(_: u64, _: i32, _: *const c_void, _: u32) -> i32 { 0 }
     pub unsafe fn lfh_settings_bool(_: *const c_char, _: *const c_char, fallback: bool) -> bool { fallback }
     pub unsafe fn lfh_settings_float(_: *const c_char, _: *const c_char, fallback: f32) -> f32 { fallback }
+    pub unsafe fn lfh_settings_string(_: *const c_char, _: *const c_char, _: *mut c_char, _: u32) -> u32 { 0 }
 }
 
 /// Compares the shim's struct sizes with ours; a mismatch means the header and the mirrors
@@ -312,4 +314,15 @@ pub fn setting_float(key: &str, fallback: f32) -> f32 {
     let (section, key) = (cstr("driver_leapfrog"), cstr(key));
     // SAFETY: strings outlive the call.
     unsafe { ffi::lfh_settings_float(section.as_ptr(), key.as_ptr(), fallback) }
+}
+
+pub fn setting_string(key: &str, fallback: &str) -> String {
+    let (section, key) = (cstr("driver_leapfrog"), cstr(key));
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer and its length are passed together; strings outlive the call.
+    let n = unsafe { ffi::lfh_settings_string(section.as_ptr(), key.as_ptr(), buf.as_mut_ptr() as *mut _, buf.len() as u32) };
+    if n == 0 {
+        return fallback.to_string();
+    }
+    String::from_utf8_lossy(&buf[..n as usize]).into_owned()
 }

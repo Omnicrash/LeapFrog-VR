@@ -38,6 +38,7 @@ int32_t lfh_create_skeleton_component(uint64_t container, const char* name, cons
 int32_t lfh_update_skeleton(uint64_t handle, int32_t motion_range, const void* bones, uint32_t count);
 bool lfh_settings_bool(const char* section, const char* key, bool fallback);
 float lfh_settings_float(const char* section, const char* key, float fallback);
+uint32_t lfh_settings_string(const char* section, const char* key, char* buf, uint32_t len);
 
 #ifdef __cplusplus
 }

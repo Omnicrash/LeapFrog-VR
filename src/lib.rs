@@ -11,6 +11,7 @@ mod host;
 mod leap;
 mod log;
 mod math;
+mod service;
 mod switching;
 
 use std::panic::{self, AssertUnwindSafe};
@@ -114,7 +115,10 @@ pub extern "C" fn lf_init() -> i32 {
             hands,
             controllers: Controllers::new(),
             #[cfg(not(feature = "host-stubs"))]
-            leap: leap::Leap::start(),
+            leap: leap::Leap::start(leap::Config {
+                manage_service: host::setting_bool("manageService", true),
+                hint: Some(host::setting_string("trackingHint", "ultra_performance_mode")).filter(|h| !h.is_empty()),
+            }),
             poses: vec![TrackedDevicePose::default(); host::MAX_TRACKED_DEVICE_COUNT],
             switches: [Switch::new(thresholds), Switch::new(thresholds)],
             offsets,
@@ -129,8 +133,12 @@ pub extern "C" fn lf_init() -> i32 {
 #[no_mangle]
 pub extern "C" fn lf_cleanup() {
     guard("cleanup", (), || {
+        let manage_service = host::setting_bool("manageService", true);
         if let Ok(mut state) = STATE.lock() {
             *state = None; // drops the Leap thread
+        }
+        if manage_service {
+            service::stop();
         }
         log!("cleanup");
     })
