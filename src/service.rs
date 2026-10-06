@@ -99,6 +99,27 @@ mod win {
         }
     }
 
+    /// A watchdog for the case Cleanup never runs (vrserver crashed or killed): a hidden
+    /// PowerShell that waits on this very process and then stops the service. Detached, so it
+    /// outlives vrserver; on a clean exit the service is already stopped and it does nothing.
+    pub fn spawn_watchdog() -> Result<u32, String> {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        let pid = std::process::id();
+        let script = format!(
+            "Wait-Process -Id {pid} -ErrorAction SilentlyContinue; Stop-Service -Name UltraleapTracking -ErrorAction SilentlyContinue"
+        );
+        let child = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
+            .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("could not start powershell: {e}"))?;
+        Ok(child.id())
+    }
+
     /// `leapctl config tracking resume|pause`: the saved pause state of the service. LeapSetPause
     /// from the SDK reports success and changes nothing on Gemini 5.20.
     pub fn tracking(state: &str) -> Result<i32, String> {
@@ -122,6 +143,10 @@ mod win {
     pub fn tracking(_state: &str) -> Result<i32, String> {
         Ok(0)
     }
+
+    pub fn spawn_watchdog() -> Result<u32, String> {
+        Ok(0)
+    }
 }
 
 #[cfg_attr(feature = "host-stubs", allow(dead_code))]
@@ -133,6 +158,10 @@ pub fn start() {
         Ok(0) => log!("Leap tracking resumed"),
         Ok(code) => log!("Leap tracking resume: leapctl exit {code}"),
         Err(why) => log!("Leap tracking resume skipped: {why}"),
+    }
+    match win::spawn_watchdog() {
+        Ok(pid) => log!("service watchdog started (pid {pid}): stops the service if vrserver dies without cleanup"),
+        Err(why) => log!("service watchdog not started: {why}"),
     }
 }
 
