@@ -6,7 +6,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 
 use crate::log::log;
 
@@ -38,38 +38,28 @@ pub fn write(dir: &Path, side: &str, bones: &[(Vec3, Vec3, f32)]) {
     }
 }
 
-/// Wavefront OBJ of a smooth hand: a flattened rounded slab for the palm (wrist to knuckles),
-/// capsules for the finger bones. Smooth normals, one texture coordinate.
+/// Wavefront OBJ of the hand: the status icon's silhouette (`hand_outline`) extruded into a
+/// flat slab with fully rounded edges, scaled to the measured hand (wrist to middle fingertip)
+/// and laid in the palm plane, wrist at the pose origin, thumb on the index side.
 fn obj(name: &str, bones: &[(Vec3, Vec3, f32)]) -> String {
     let mut mesh = Mesh::default();
     let fingers = fingers_of(bones);
-
-    // Palm: wrist (the pose origin) to the knuckles of index..pinky.
     let knuckles: Vec<Vec3> = fingers.iter().skip(1).filter_map(|f| f.first().map(|b| b.1)).collect();
-    if knuckles.len() >= 2 {
-        let wrist = Vec3::ZERO;
-        let knuckle_mid = knuckles.iter().sum::<Vec3>() / knuckles.len() as f32;
-        let finger_width = fingers.iter().skip(1).filter_map(|f| f.get(1).map(|b| b.2)).sum::<f32>() / 4.0;
-        let along = (knuckle_mid - wrist).normalize_or_zero();
-        let across_raw = knuckles[0] - knuckles[knuckles.len() - 1];
-        let across = (across_raw - along * across_raw.dot(along)).normalize_or_zero();
-        let normal = along.cross(across).normalize_or_zero();
-        let length = (knuckle_mid - wrist).length() + finger_width * 0.8;
-        let width = across_raw.length() + finger_width * 1.2;
-        let thickness = finger_width * 1.1;
-        let center = (wrist + knuckle_mid) * 0.5 + along * (finger_width * 0.1);
-        mesh.slab(center, along * (length * 0.5), across * (width * 0.5), normal * (thickness * 0.5));
-    }
+    let middle_tip = fingers.get(2).and_then(|f| f.last()).map(|b| b.1).unwrap_or(Vec3::new(0.0, 0.0, -0.18));
+    let finger_width = fingers.iter().skip(1).filter_map(|f| f.get(1).map(|b| b.2)).sum::<f32>() / 4.0;
+    let finger_width = if finger_width > 0.005 { finger_width } else { 0.018 };
 
-    // Fingers: every bone outside the palm, the thumb's whole chain.
-    for (i, finger) in fingers.iter().enumerate() {
-        for (j, &(a, b, width)) in finger.iter().enumerate() {
-            if i != 0 && j == 0 {
-                continue; // metacarpal, inside the palm
-            }
-            mesh.capsule(a, b, width * 0.5);
-        }
-    }
+    // Palm frame: along = wrist to knuckles, across = pinky to index (the thumb side), normal.
+    let knuckle_mid = if knuckles.is_empty() { middle_tip * 0.5 } else { knuckles.iter().sum::<Vec3>() / knuckles.len() as f32 };
+    let along = knuckle_mid.normalize_or_zero();
+    let across_raw = if knuckles.len() >= 2 { knuckles[0] - knuckles[knuckles.len() - 1] } else { Vec3::X };
+    let across = (across_raw - along * across_raw.dot(along)).normalize_or_zero();
+    let normal = along.cross(across).normalize_or_zero();
+    let length = middle_tip.length();
+    let radius = finger_width * 0.45; // half thickness = edge radius: a pill profile
+
+    let outline: Vec<Vec2> = crate::hand_outline::HAND_OUTLINE.iter().map(|p| Vec2::new(p[0] * length, p[1] * length)).collect();
+    mesh.rounded_slab(&outline, radius, |p, z| across * p.x + along * p.y + normal * z, across, along, normal);
     mesh.to_obj(name)
 }
 
@@ -86,6 +76,71 @@ fn fingers_of(bones: &[(Vec3, Vec3, f32)]) -> Vec<Vec<(Vec3, Vec3, f32)>> {
     fingers
 }
 
+/// Signed area: positive for counterclockwise.
+fn signed_area(poly: &[Vec2]) -> f32 {
+    let n = poly.len();
+    (0..n).map(|i| poly[i].perp_dot(poly[(i + 1) % n])).sum::<f32>() * 0.5
+}
+
+/// Moves every vertex of a counterclockwise polygon inward by `d` (miter, limited).
+fn offset_inward(poly: &[Vec2], d: f32) -> Vec<Vec2> {
+    let n = poly.len();
+    (0..n)
+        .map(|i| {
+            let (prev, cur, next) = (poly[(i + n - 1) % n], poly[i], poly[(i + 1) % n]);
+            let n1 = (cur - prev).normalize_or_zero().perp(); // left normal = inward for CCW
+            let n2 = (next - cur).normalize_or_zero().perp();
+            let bisector = (n1 + n2).normalize_or_zero();
+            let cos_half = bisector.dot(n1).max(0.5); // miter limit 2x
+            cur + bisector * (d / cos_half)
+        })
+        .collect()
+}
+
+/// Ear clipping of a simple counterclockwise polygon; indices into it.
+fn triangulate(poly: &[Vec2]) -> Vec<[usize; 3]> {
+    let mut idx: Vec<usize> = (0..poly.len()).collect();
+    let mut tris = Vec::new();
+    let inside = |p: Vec2, a: Vec2, b: Vec2, c: Vec2| {
+        let s1 = (b - a).perp_dot(p - a);
+        let s2 = (c - b).perp_dot(p - b);
+        let s3 = (a - c).perp_dot(p - c);
+        s1 >= -1e-9 && s2 >= -1e-9 && s3 >= -1e-9
+    };
+    let mut guard = 0;
+    while idx.len() > 3 && guard < 10_000 {
+        guard += 1;
+        let n = idx.len();
+        let mut clipped = false;
+        for i in 0..n {
+            let (ia, ib, ic) = (idx[(i + n - 1) % n], idx[i], idx[(i + 1) % n]);
+            let (a, b, c) = (poly[ia], poly[ib], poly[ic]);
+            if (b - a).perp_dot(c - b) <= 1e-9 {
+                continue; // reflex or degenerate corner
+            }
+            let blocked = idx.iter().any(|&k| k != ia && k != ib && k != ic && inside(poly[k], a, b, c));
+            if blocked {
+                continue;
+            }
+            tris.push([ia, ib, ic]);
+            idx.remove(i);
+            clipped = true;
+            break;
+        }
+        if !clipped {
+            // Numerically stuck: fan the rest rather than loop forever.
+            for i in 1..idx.len() - 1 {
+                tris.push([idx[0], idx[i], idx[i + 1]]);
+            }
+            return tris;
+        }
+    }
+    if idx.len() == 3 {
+        tris.push([idx[0], idx[1], idx[2]]);
+    }
+    tris
+}
+
 #[derive(Default)]
 struct Mesh {
     vertices: Vec<(Vec3, Vec3)>, // position, normal
@@ -93,72 +148,57 @@ struct Mesh {
 }
 
 impl Mesh {
-    const SEGMENTS: usize = 14;
-    const RINGS: usize = 6;
-
-    /// A grid of (RINGS+1) x SEGMENTS points, closed around the segments, into triangles.
-    fn grid_faces(&mut self, first: usize, rows: usize, cols: usize) {
-        for r in 0..rows - 1 {
-            for c in 0..cols {
-                let (c1, r1) = ((c + 1) % cols, r + 1);
-                let i = |rr: usize, cc: usize| first + rr * cols + cc;
-                self.faces.push([i(r, c), i(r1, c), i(r1, c1)]);
-                self.faces.push([i(r, c), i(r1, c1), i(r, c1)]);
-            }
+    /// The outline extruded to a slab of half-thickness `radius` with a quarter-circle edge
+    /// profile top and bottom (so the edge is a full half-round). `place` maps outline
+    /// coordinates and a height to 3D.
+    fn rounded_slab(&mut self, outline: &[Vec2], radius: f32, place: impl Fn(Vec2, f32) -> Vec3, across: Vec3, along: Vec3, normal: Vec3) {
+        let mut outline: Vec<Vec2> = outline.to_vec();
+        if signed_area(&outline) < 0.0 {
+            outline.reverse();
         }
-    }
-
-    /// Rounded cylinder from a to b.
-    fn capsule(&mut self, a: Vec3, b: Vec3, radius: f32) {
-        let axis = (b - a).normalize_or_zero();
-        let helper = if axis.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
-        let u = axis.cross(helper).normalize_or_zero();
-        let w = axis.cross(u).normalize_or_zero();
-        let first = self.vertices.len();
-        let mut rows = 0;
-        // Hemisphere at a (pointing back), cylinder, hemisphere at b.
-        for half in 0..2 {
-            for r in 0..=Self::RINGS {
-                let t = r as f32 / Self::RINGS as f32; // 0 at the pole, 1 at the equator
-                let (lat_sin, lat_cos) = ((t * std::f32::consts::FRAC_PI_2).sin(), (t * std::f32::consts::FRAC_PI_2).cos());
-                let (t_pole, t_eq) = if half == 0 { (a, a) } else { (b, b) };
-                let (center, dir) = if half == 0 { (t_pole, -axis) } else { (t_eq, axis) };
-                // Rings run pole -> equator for the a cap, equator -> pole for the b cap.
-                let (rs, rc) = if half == 0 { (lat_sin, lat_cos) } else { (lat_cos, lat_sin) };
-                for c in 0..Self::SEGMENTS {
-                    let ang = c as f32 / Self::SEGMENTS as f32 * std::f32::consts::TAU;
-                    let radial = u * ang.cos() + w * ang.sin();
-                    let n = (radial * rs + dir * rc).normalize_or_zero();
-                    self.vertices.push((center + n * radius, n));
+        const STEPS: usize = 6;
+        let n = outline.len();
+        let to3 = |v: Vec2, z: f32| (across * v.x + along * v.y + normal * z).normalize_or_zero();
+        for side in [1.0f32, -1.0] {
+            // Rings from the equator (edge, z = 0) inward and up to the flat cap at d = radius.
+            let first = self.vertices.len();
+            let mut rings = Vec::new();
+            for k in 0..=STEPS {
+                let theta = k as f32 / STEPS as f32 * std::f32::consts::FRAC_PI_2;
+                let (d, z) = (radius * (1.0 - theta.cos()), radius * theta.sin() * side);
+                let ring = offset_inward(&outline, d);
+                for (i, p) in ring.iter().enumerate() {
+                    let (prev, next) = (ring[(i + n - 1) % n], ring[(i + 1) % n]);
+                    let outward = -((next - prev).normalize_or_zero().perp());
+                    let nrm = to3(outward * theta.cos(), theta.sin() * side);
+                    self.vertices.push((place(*p, z), nrm));
                 }
-                rows += 1;
+                rings.push(ring);
+            }
+            // Quads between consecutive rings; winding flipped for the bottom side.
+            for k in 0..STEPS {
+                for i in 0..n {
+                    let (a, b) = (first + k * n + i, first + k * n + (i + 1) % n);
+                    let (c, d) = (first + (k + 1) * n + (i + 1) % n, first + (k + 1) * n + i);
+                    if side > 0.0 {
+                        self.faces.push([a, b, c]);
+                        self.faces.push([a, c, d]);
+                    } else {
+                        self.faces.push([a, c, b]);
+                        self.faces.push([a, d, c]);
+                    }
+                }
+            }
+            // The flat cap over the innermost ring.
+            let cap_first = first + STEPS * n;
+            for t in triangulate(&rings[STEPS]) {
+                if side > 0.0 {
+                    self.faces.push([cap_first + t[0], cap_first + t[1], cap_first + t[2]]);
+                } else {
+                    self.faces.push([cap_first + t[0], cap_first + t[2], cap_first + t[1]]);
+                }
             }
         }
-        self.grid_faces(first, rows, Self::SEGMENTS);
-    }
-
-    /// Flattened, squarish ellipsoid (a superellipsoid): half-axes along, across, thick.
-    fn slab(&mut self, center: Vec3, along: Vec3, across: Vec3, thick: Vec3) {
-        let first = self.vertices.len();
-        let rows = Self::RINGS * 2 + 1;
-        let cols = Self::SEGMENTS * 2;
-        // Exponent below 1 squares the outline (palm), 1 is a plain ellipsoid.
-        let sq = |v: f32, e: f32| v.signum() * v.abs().powf(e);
-        for r in 0..rows {
-            let lat = (r as f32 / (rows - 1) as f32 - 0.5) * std::f32::consts::PI; // -pi/2 .. pi/2 (thickness)
-            for c in 0..cols {
-                let lon = c as f32 / cols as f32 * std::f32::consts::TAU;
-                let (x, y, z) = (sq(lon.cos(), 0.75) * lat.cos(), sq(lon.sin(), 0.75) * lat.cos(), lat.sin());
-                let p = center + along * x + across * y + thick * z;
-                // Normal of the scaled surface: component-wise divide by the squared half-axes.
-                let n = (along.normalize_or_zero() * (x / along.length())
-                    + across.normalize_or_zero() * (y / across.length())
-                    + thick.normalize_or_zero() * (z / thick.length()))
-                .normalize_or_zero();
-                self.vertices.push((p, n));
-            }
-        }
-        self.grid_faces(first, rows, cols);
     }
 
     fn to_obj(&self, name: &str) -> String {
@@ -284,7 +324,29 @@ mod tests {
         let f = text.lines().filter(|l| l.starts_with("f ")).count();
         assert_eq!(v, vn);
         assert!(f > 1000, "faces: {f}");
-        assert!(!text.contains("NaN"));
+        assert!(!text.contains("NaN") && !text.contains("inf"));
+    }
+
+    #[test]
+    fn outline_triangulates_completely() {
+        let poly: Vec<Vec2> = crate::hand_outline::HAND_OUTLINE.iter().map(|p| Vec2::new(p[0], p[1])).collect();
+        let mut poly = poly;
+        if signed_area(&poly) < 0.0 {
+            poly.reverse();
+        }
+        let tris = triangulate(&poly);
+        assert_eq!(tris.len(), poly.len() - 2);
+        // Total triangle area equals the polygon's.
+        let area: f32 = tris.iter().map(|t| (poly[t[1]] - poly[t[0]]).perp_dot(poly[t[2]] - poly[t[0]]) * 0.5).sum();
+        assert!((area - signed_area(&poly)).abs() < 1e-3, "area {area} vs {}", signed_area(&poly));
+    }
+
+    #[test]
+    fn hand_is_scaled_to_the_measured_length() {
+        let text = obj("test", &test_hand());
+        // Middle finger tip in the test hand is at x = 0.16: the model must reach about there.
+        let max_x = text.lines().filter(|l| l.starts_with("v ")).filter_map(|l| l[2..].split_whitespace().next()?.parse::<f32>().ok()).fold(0.0, f32::max);
+        assert!((max_x - 0.16).abs() < 0.01, "max x {max_x}");
     }
 
     #[test]

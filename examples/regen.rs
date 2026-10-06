@@ -5,6 +5,9 @@ use std::path::Path;
 #[path = "../src/hand_model.rs"]
 #[allow(dead_code)]
 mod hand_model;
+#[path = "../src/hand_outline.rs"]
+#[allow(dead_code)]
+mod hand_outline;
 #[path = "../src/log.rs"]
 #[allow(dead_code)]
 mod log;

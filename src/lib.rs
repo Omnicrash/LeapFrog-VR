@@ -8,6 +8,7 @@
 mod controllers;
 mod hand;
 mod hand_model;
+mod hand_outline;
 mod host;
 mod leap;
 mod log;
