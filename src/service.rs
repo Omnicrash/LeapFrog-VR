@@ -199,10 +199,6 @@ mod win {
         Ok(0)
     }
 
-    pub fn own_directory() -> Option<std::path::PathBuf> {
-        None
-    }
-
     pub fn process_running(_name: &str) -> bool {
         false
     }
@@ -234,10 +230,6 @@ fn report(what: &str, result: Result<bool, u32>) {
         Ok(false) => log!("UltraleapTracking service: {what} requested, not settled within 10 s"),
         Err(code) => log!("UltraleapTracking service: {what} failed, Win32 error {code} (no access? see doc/Design.md)"),
     }
-}
-
-pub fn dll_directory() -> Option<std::path::PathBuf> {
-    win::own_directory()
 }
 
 pub fn process_running(name: &str) -> bool {

@@ -1,4 +1,5 @@
-//! The hand silhouette of the status icon, as the outline the render model is extruded from.
+//! The hand silhouette of the status icon (`resources/icons/left_hand_status_ready@2x.png`),
+//! traced by `tools/outline/trace.py`. The render model is this outline, in 3D.
 
 // Traced from left_hand_status_ready@2x.png by tools/outline/trace.py: 128 points,
 // x centered, y from 0 (wrist) to 1 (fingertips), both relative to the hand's length.

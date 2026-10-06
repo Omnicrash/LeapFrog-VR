@@ -1,3 +1,5 @@
 newmtl hand
-Kd 0.82 0.82 0.85
+Kd 0.16 0.16 0.17
+Ks 0.08 0.08 0.08
+Ns 20
 map_Kd leapfrog_hand_right-diff.png

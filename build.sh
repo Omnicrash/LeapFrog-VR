@@ -9,6 +9,7 @@ install=0
 if [ "${1:-}" = "--install" ]; then install=1; shift; fi
 
 cargo xwin build --release --workspace "$@"
+cargo run -q -p handmodel --target x86_64-unknown-linux-gnu -- resources/rendermodels
 
 out=dist/leapfrog
 rm -rf "$out"

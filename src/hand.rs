@@ -15,8 +15,6 @@ pub struct Hand {
     bones: [BoneTransform; BONE_COUNT],
     candidate: Option<DriverPose>,
     was_connected: bool,
-    pub model_written: bool,
-    last_frame: Option<HandFrame>,
 }
 
 impl Hand {
@@ -29,8 +27,6 @@ impl Hand {
             bones: math::open_hand(index == host::HAND_LEFT),
             candidate: None,
             was_connected: false,
-            model_written: false,
-            last_frame: None,
         }
     }
 
@@ -72,8 +68,7 @@ impl Hand {
             // Virtual Desktop's hand type: pose + skeleton only, and VRChat ships a binding for it.
             .set_string(prop::CONTROLLER_TYPE, "vd_hand_controller");
 
-        // Render model and status icons from Leapify (MIT): the model is a small axes gizmo at
-        // the wrist, handy for tuning the offsets, and nothing like a controller in the hand.
+        // Render model (handmodel/: the status icon's outline in 3D) and Leapify's status icons (MIT).
         let side = self.side();
         props.set_string(prop::RENDER_MODEL_NAME, &format!("{{leapfrog}}leapfrog_hand_{side}"));
         let icons = [
@@ -129,20 +124,7 @@ impl Hand {
         pose.result = host::TRACKING_RESULT_RUNNING_OK;
         frame.skeleton(&mut self.bones);
         self.candidate = Some(pose);
-        self.last_frame = Some(frame);
         Some(world_rotation * position + world_translation)
-    }
-
-    /// Writes this hand's render model from the last located frame, once per run.
-    pub fn write_model(&mut self) {
-        let Some(frame) = &self.last_frame else { return };
-        let Some(dir) = crate::service::dll_directory().and_then(|d| crate::hand_model::rendermodels_dir(&d)) else {
-            log!("hand model: the driver's folder is unknown");
-            self.model_written = true;
-            return;
-        };
-        crate::hand_model::write(&dir, self.side(), &frame.bones_in_pose_frame());
-        self.model_written = true;
     }
 
     /// Step two: connected while this device drives the hand; the located pose if there is one,

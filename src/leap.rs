@@ -18,6 +18,7 @@ pub fn now_us() -> i64 {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)] // next_joint and width: kept from LeapC for later use
 pub struct Bone {
     pub prev_joint: [f32; 3],
     pub next_joint: [f32; 3],
