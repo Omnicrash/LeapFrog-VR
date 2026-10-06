@@ -10,6 +10,7 @@
     "rotationOffsetZ": 0.0,
     "pickupSwitching": true,
     "awayDistance": 0.20,
+    "nearDistance": 0.10,
     "awayTime": 0.5,
     "stillSpeed": 0.15,
     "pickupSpeed": 0.4
