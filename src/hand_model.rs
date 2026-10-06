@@ -23,7 +23,7 @@ pub fn write(dir: &Path, side: &str, bones: &[(Vec3, Vec3, f32)]) {
         std::fs::create_dir_all(&folder)?;
         std::fs::write(folder.join(format!("{name}.obj")), obj(&name, bones))?;
         std::fs::write(folder.join(format!("{name}.mtl")), format!("newmtl hand\nKd 0.82 0.82 0.85\nmap_Kd {name}-diff.png\n"))?;
-        std::fs::write(folder.join(format!("{name}-diff.png")), png_4x4(210, 210, 216))?;
+        std::fs::write(folder.join(format!("{name}-diff.png")), png_flat(32, 210, 210, 216))?;
         std::fs::write(
             folder.join(format!("{name}.json")),
             format!(
@@ -77,8 +77,9 @@ fn obj(name: &str, bones: &[(Vec3, Vec3, f32)]) -> String {
     out
 }
 
-/// A 4x4 flat-color PNG, no image library needed.
-fn png_4x4(r: u8, g: u8, b: u8) -> Vec<u8> {
+/// A flat-color PNG of `size` x `size`, no image library needed. 32 and up keeps the
+/// compositor's mip levels happy (a 4x4 texture logged "Failed to create SRV" per mip).
+fn png_flat(size: u32, r: u8, g: u8, b: u8) -> Vec<u8> {
     fn crc(data: &[u8]) -> u32 {
         let mut c = 0xFFFF_FFFFu32;
         for &byte in data {
@@ -105,9 +106,9 @@ fn png_4x4(r: u8, g: u8, b: u8) -> Vec<u8> {
         out.extend_from_slice(&crc(&body).to_be_bytes());
     }
     let mut raw = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..size {
         raw.push(0); // filter: none
-        for _ in 0..4 {
+        for _ in 0..size {
             raw.extend_from_slice(&[r, g, b]);
         }
     }
@@ -119,8 +120,8 @@ fn png_4x4(r: u8, g: u8, b: u8) -> Vec<u8> {
     z.extend_from_slice(&adler(&raw).to_be_bytes());
     let mut out = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
     let mut ihdr = Vec::new();
-    ihdr.extend_from_slice(&4u32.to_be_bytes());
-    ihdr.extend_from_slice(&4u32.to_be_bytes());
+    ihdr.extend_from_slice(&size.to_be_bytes());
+    ihdr.extend_from_slice(&size.to_be_bytes());
     ihdr.extend_from_slice(&[8, 2, 0, 0, 0]); // 8-bit RGB
     chunk(&mut out, b"IHDR", &ihdr);
     chunk(&mut out, b"IDAT", &z);
@@ -142,7 +143,7 @@ mod tests {
 
     #[test]
     fn png_is_well_formed() {
-        let png = png_4x4(1, 2, 3);
+        let png = png_flat(32, 1, 2, 3);
         assert_eq!(&png[..8], &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
         assert_eq!(&png[12..16], b"IHDR");
         assert!(png.ends_with(&[b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82]));
