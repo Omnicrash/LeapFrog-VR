@@ -77,8 +77,6 @@ fn read_thresholds() -> Thresholds {
         away_m: host::setting_float("awayDistance", d.away_m),
         near_m: host::setting_float("nearDistance", d.near_m),
         away_s: host::setting_float("awayTime", d.away_s),
-        unseen_s: host::setting_float("unseenTime", d.unseen_s),
-        lockout_s: host::setting_float("lockoutTime", d.lockout_s),
         still_mps: host::setting_float("stillSpeed", d.still_mps),
         pickup_mps: host::setting_float("pickupSpeed", d.pickup_mps),
     }
@@ -215,16 +213,10 @@ impl State {
                     let m = &c.device_to_absolute_tracking;
                     Vec3::new(m[0][3], m[1][3], m[2][3])
                 }),
-                controller_rotation: controller.filter(|c| c.pose_is_valid).map(|c| math::Head::from_pose(c).rotation).unwrap_or(glam::Quat::IDENTITY),
                 controller_velocity: controller.map(|c| Vec3::from(c.velocity)).unwrap_or(Vec3::ZERO),
                 hand_position,
             };
             let driver = self.switches[i].update(now_s, &observation);
-            if self.frame % 900 == 0 {
-                if let Some(grip) = self.switches[i].grip() {
-                    log!("{} grip point (wrist in controller frame): {:.3} {:.3} {:.3} m", hand.side(), grip.x, grip.y, grip.z);
-                }
-            }
             hand.apply(driver == Driver::Leap);
             hand.publish();
             if self.write_hand_model && !hand.model_written && hand_position.is_some() {
