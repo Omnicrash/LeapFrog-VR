@@ -18,18 +18,18 @@ pub fn now_us() -> i64 {
 }
 
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)] // next_joint: fingertips, for later
 pub struct Bone {
     pub prev_joint: [f32; 3],
     pub next_joint: [f32; 3],
     pub rotation: [f32; 4], // x, y, z, w
+    pub width: f32,         // mm
 }
 
 const IDENTITY: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
 impl Default for Bone {
     fn default() -> Bone {
-        Bone { prev_joint: [0.0; 3], next_joint: [0.0; 3], rotation: IDENTITY }
+        Bone { prev_joint: [0.0; 3], next_joint: [0.0; 3], rotation: IDENTITY, width: 15.0 }
     }
 }
 
@@ -355,7 +355,8 @@ fn sample_of(hand: &sys::LEAP_HAND, timestamp_us: i64) -> HandSample {
         // SAFETY: same union shape as above, four bones.
         let bones = unsafe { digit.__bindgen_anon_1.bones };
         for (b, bone) in bones.iter().enumerate() {
-            fingers[f][b] = Bone { prev_joint: vec3(bone.prev_joint), next_joint: vec3(bone.next_joint), rotation: quat(bone.rotation) };
+            let width = bone.width; // packed field, copied
+            fingers[f][b] = Bone { prev_joint: vec3(bone.prev_joint), next_joint: vec3(bone.next_joint), rotation: quat(bone.rotation), width };
         }
     }
     HandSample {

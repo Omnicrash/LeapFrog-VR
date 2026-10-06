@@ -100,7 +100,7 @@ mod win {
     }
 
     /// The folder this DLL was loaded from (bin/win64 of the driver).
-    fn own_directory() -> Option<std::path::PathBuf> {
+    pub fn own_directory() -> Option<std::path::PathBuf> {
         use windows_sys::Win32::System::LibraryLoader::{
             GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
         };
@@ -170,6 +170,10 @@ mod win {
     pub fn spawn_watchdog() -> Result<u32, String> {
         Ok(0)
     }
+
+    pub fn own_directory() -> Option<std::path::PathBuf> {
+        None
+    }
 }
 
 #[cfg_attr(feature = "host-stubs", allow(dead_code))]
@@ -198,4 +202,8 @@ fn report(what: &str, result: Result<bool, u32>) {
         Ok(false) => log!("UltraleapTracking service: {what} requested, not settled within 10 s"),
         Err(code) => log!("UltraleapTracking service: {what} failed, Win32 error {code} (no access? see doc/Design.md)"),
     }
+}
+
+pub fn dll_directory() -> Option<std::path::PathBuf> {
+    win::own_directory()
 }

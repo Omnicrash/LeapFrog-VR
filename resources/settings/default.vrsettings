@@ -2,6 +2,7 @@
   "driver_leapfrog": {
     "enable": true,
     "debugPanic": false,
+    "writeHandModel": false,
     "manageService": true,
     "trackingHint": "ultra_performance_mode",
     "handOffsetX": 0.0,

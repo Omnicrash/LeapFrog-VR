@@ -7,6 +7,7 @@
 
 mod controllers;
 mod hand;
+mod hand_model;
 mod host;
 mod leap;
 mod log;
@@ -40,6 +41,7 @@ struct State {
     poses: Vec<TrackedDevicePose>,
     switches: [Switch; 2],
     offsets: Offsets,
+    write_hand_model: bool,
     debug_panic_pending: bool,
 }
 
@@ -122,6 +124,7 @@ pub extern "C" fn lf_init() -> i32 {
             poses: vec![TrackedDevicePose::default(); host::MAX_TRACKED_DEVICE_COUNT],
             switches: [Switch::new(thresholds), Switch::new(thresholds)],
             offsets,
+            write_hand_model: host::setting_bool("writeHandModel", false),
             debug_panic_pending: host::setting_bool("debugPanic", false),
         };
         *STATE.lock().unwrap() = Some(state);
@@ -200,6 +203,9 @@ impl State {
             let driver = self.switches[i].update(now_s, &observation);
             hand.apply(driver == Driver::Leap);
             hand.publish();
+            if self.write_hand_model && !hand.model_written && hand_position.is_some() {
+                hand.write_model();
+            }
         }
     }
 }

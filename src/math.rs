@@ -157,16 +157,22 @@ pub struct HandFrame {
     palm_rotation: Quat,
     bone_positions: [Vec3; 20],
     bone_rotations: [Quat; 20],
+    bone_ends: [Vec3; 20],
+    bone_widths: [f32; 20],
 }
 
 impl HandFrame {
     pub fn new(sample: &HandSample, left: bool) -> HandFrame {
         let mut bone_positions = [Vec3::ZERO; 20];
         let mut bone_rotations = [Quat::IDENTITY; 20];
+        let mut bone_ends = [Vec3::ZERO; 20];
+        let mut bone_widths = [0.0f32; 20];
         for (f, finger) in sample.fingers.iter().enumerate() {
             for (b, bone) in finger.iter().enumerate() {
                 bone_positions[f * 4 + b] = position(bone.prev_joint);
                 bone_rotations[f * 4 + b] = rotation(bone.rotation);
+                bone_ends[f * 4 + b] = position(bone.next_joint);
+                bone_widths[f * 4 + b] = bone.width * 0.001;
             }
         }
         HandFrame {
@@ -176,7 +182,20 @@ impl HandFrame {
             palm_rotation: rotation(sample.palm_orientation).normalize(),
             bone_positions,
             bone_rotations,
+            bone_ends,
+            bone_widths,
         }
+    }
+
+    /// Every bone as (start, end, width) in the pose's own frame: origin at the wrist, axes of
+    /// the palm rotation. What the render model writer draws.
+    pub fn bones_in_pose_frame(&self) -> Vec<(Vec3, Vec3, f32)> {
+        let inv = self.palm_rotation.inverse();
+        let local = |p: Vec3| inv * (p - self.wrist);
+        (0..20)
+            .filter(|&i| (self.bone_ends[i] - self.bone_positions[i]).length() > 0.002) // the thumb's metacarpal has no length
+            .map(|i| (local(self.bone_positions[i]), local(self.bone_ends[i]), self.bone_widths[i]))
+            .collect()
     }
 
     /// World-from-driver = the head; the hand sits in the head's frame.
