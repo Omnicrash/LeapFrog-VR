@@ -29,7 +29,7 @@ pub struct Thresholds {
 
 impl Default for Thresholds {
     fn default() -> Thresholds {
-        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 1.5, still_mps: 0.15, pickup_mps: 0.4, spacing_s: 2.0 }
+        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 0.5, still_mps: 0.15, pickup_mps: 0.4, spacing_s: 2.0 }
     }
 }
 
@@ -241,8 +241,8 @@ mod tests {
         // Put down: hand 25 cm from the grip point; the short delay applies once learned.
         let away = Some(Vec3::new(-0.25, 0.25, 0.0));
         s.update(20.0, &obs(true, Vec3::ZERO, 0.0, away));
-        assert_eq!(s.update(21.0, &obs(true, Vec3::ZERO, 0.0, away)), Driver::Controller);
-        assert_eq!(s.update(21.6, &obs(true, Vec3::ZERO, 0.0, away)), Driver::Leap);
+        assert_eq!(s.update(20.3, &obs(true, Vec3::ZERO, 0.0, away)), Driver::Controller);
+        assert_eq!(s.update(20.6, &obs(true, Vec3::ZERO, 0.0, away)), Driver::Leap);
     }
 
     #[test]
@@ -298,12 +298,12 @@ mod tests {
         for i in 1..20 {
             assert_eq!(s.update(1.0 + i as f64 * 0.1, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Controller);
         }
-        s.update(3.05, &obs(true, Vec3::ZERO, 0.0, far)); // spacing over: the put-down timer starts (1.5 s)
-        assert_eq!(s.update(4.0, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Controller);
-        assert_eq!(s.update(4.6, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Leap);
+        s.update(3.05, &obs(true, Vec3::ZERO, 0.0, far)); // spacing over: the put-down timer starts (0.5 s)
+        assert_eq!(s.update(3.4, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Controller);
+        assert_eq!(s.update(3.6, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Leap);
         // Grab it again at once: hand at the controller, but the spacing holds for 2 s.
-        assert_eq!(s.update(4.8, &obs(true, Vec3::ZERO, 0.0, near)), Driver::Leap);
-        assert_eq!(s.update(6.7, &obs(true, Vec3::ZERO, 0.0, near)), Driver::Controller);
+        assert_eq!(s.update(3.8, &obs(true, Vec3::ZERO, 0.0, near)), Driver::Leap);
+        assert_eq!(s.update(5.7, &obs(true, Vec3::ZERO, 0.0, near)), Driver::Controller);
     }
 
     #[test]

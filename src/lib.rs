@@ -32,6 +32,11 @@ static STATE: Mutex<Option<State>> = Mutex::new(None);
 /// A sample older than this is a hand the Leap no longer sees.
 const STALE_US: i64 = 300_000;
 
+/// SteamVR counts binding loads per app process for its whole session and stops reloading
+/// around 250 (doc/Background.md, "The FBT night"). Every hand transition costs VRChat about two
+/// loads and the compositor one per two transitions, so warn from here on, every 25.
+const TRANSITION_WARNING: u32 = 100;
+
 struct State {
     hands: [Hand; 2],
     controllers: Controllers,
@@ -43,6 +48,7 @@ struct State {
     pickup_enabled: bool,
     room_setup: bool,
     frame: u32,
+    transitions: u32,
     debug_panic_pending: bool,
 }
 
@@ -146,6 +152,7 @@ pub extern "C" fn lf_init() -> i32 {
             pickup_enabled: host::setting_bool("pickupSwitching", true),
             room_setup: false,
             frame: 0,
+            transitions: 0,
             debug_panic_pending: host::setting_bool("debugPanic", false),
         };
         *STATE.lock().unwrap() = Some(state);

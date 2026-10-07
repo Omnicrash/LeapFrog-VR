@@ -144,15 +144,16 @@ impl Hand {
     }
 
     /// Step two: connected while this device drives the hand; the located pose if there is one,
-    /// out of range otherwise.
-    pub fn apply(&mut self, connected: bool) {
-        if connected != self.was_connected {
+    /// out of range otherwise. Returns whether this frame is a transition (connect or disconnect).
+    pub fn apply(&mut self, connected: bool) -> bool {
+        let transition = connected != self.was_connected;
+        if transition {
             self.was_connected = connected;
             log!("{} hand {}", self.side(), if connected { "takes over" } else { "steps back" });
         }
         if !connected {
             self.pose = DriverPose::disconnected();
-            return;
+            return transition;
         }
         match self.candidate {
             Some(pose) => {
@@ -169,6 +170,7 @@ impl Hand {
                 self.pose = pose;
             }
         }
+        transition
     }
 
     /// Sends the current pose; called once per RunFrame.
