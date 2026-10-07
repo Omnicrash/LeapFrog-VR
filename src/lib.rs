@@ -97,6 +97,7 @@ fn read_thresholds() -> Thresholds {
         away_s: host::setting_float("awayTime", d.away_s),
         still_mps: host::setting_float("stillSpeed", d.still_mps),
         pickup_mps: host::setting_float("pickupSpeed", d.pickup_mps),
+        lockout_s: host::setting_float("lockoutTime", d.lockout_s),
     }
 }
 
@@ -233,7 +234,9 @@ impl State {
                 force_controller,
                 controller_known: controller.is_some(),
                 controller_on: controller.map(|c| c.device_is_connected).unwrap_or(false),
-                controller_position: controller.filter(|c| c.pose_is_valid).map(|c| {
+                // Only a fully tracked pose: a controller that lost the base stations dead-reckons
+                // on its gyros and drifts, which must not look like a put-down.
+                controller_position: controller.filter(|c| c.pose_is_valid && c.tracking_result == host::TRACKING_RESULT_RUNNING_OK).map(|c| {
                     let m = &c.device_to_absolute_tracking;
                     Vec3::new(m[0][3], m[1][3], m[2][3])
                 }),

@@ -23,11 +23,13 @@ pub struct Thresholds {
     pub away_s: f32,
     pub still_mps: f32,
     pub pickup_mps: f32,
+    /// After a hand-back, no take-over for this long.
+    pub lockout_s: f32,
 }
 
 impl Default for Thresholds {
     fn default() -> Thresholds {
-        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 0.1, still_mps: 0.15, pickup_mps: 0.4 }
+        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 0.1, still_mps: 0.15, pickup_mps: 0.4, lockout_s: 2.0 }
     }
 }
 
@@ -40,6 +42,7 @@ pub struct Observation {
     /// Whether the controller has been identified at all; before that nothing is known.
     pub controller_known: bool,
     pub controller_on: bool,
+    /// The controller's position, only when its pose is fully tracked (optical lock).
     pub controller_position: Option<Vec3>,
     pub controller_rotation: Quat,
     pub controller_velocity: Vec3,
@@ -51,6 +54,7 @@ pub struct Switch {
     state: Driver,
     away_since: Option<f64>,
     controller_known: bool,
+    locked_until: f64,
     /// Wrist position in the controller's frame while held, and how many samples went in.
     grip: Vec3,
     grip_samples: u32,
@@ -62,7 +66,7 @@ const GRIP_SAMPLES: u32 = 45;
 
 impl Switch {
     pub fn new(thresholds: Thresholds) -> Switch {
-        Switch { state: Driver::Controller, away_since: None, controller_known: false, grip: Vec3::ZERO, grip_samples: 0, thresholds }
+        Switch { state: Driver::Controller, away_since: None, controller_known: false, locked_until: 0.0, grip: Vec3::ZERO, grip_samples: 0, thresholds }
     }
 
     /// The learned grip point (wrist in the controller frame) once trusted.
@@ -92,11 +96,11 @@ impl Switch {
         let distance = match (o.hand_position, o.controller_position) {
             (Some(hand), Some(controller)) => {
                 let local = o.controller_rotation.inverse() * (hand - controller);
-                // Learn the grip: controller driving, clearly moving, hand seen within reach.
-                if self.state == Driver::Controller && speed > 0.3 && local.length() < 0.3 {
-                    let alpha = if self.grip_samples < GRIP_SAMPLES { 1.0 / (self.grip_samples as f32 + 1.0) } else { 0.02 };
-                    self.grip = self.grip.lerp(local, alpha);
-                    self.grip_samples = self.grip_samples.saturating_add(1);
+                // Learn the grip once: controller driving, clearly moving, hand seen within reach;
+                // frozen after GRIP_SAMPLES so a mislabeled hand later cannot move it.
+                if self.state == Driver::Controller && self.grip_samples < GRIP_SAMPLES && speed > 0.5 && local.length() < 0.3 {
+                    self.grip = self.grip.lerp(local, 1.0 / (self.grip_samples as f32 + 1.0));
+                    self.grip_samples += 1;
                 }
                 let reference = match self.grip() {
                     Some(grip) => controller + o.controller_rotation * grip,
@@ -111,10 +115,11 @@ impl Switch {
                 if speed > t.pickup_mps || distance.is_some_and(|d| d < t.near_m) {
                     self.state = Driver::Controller;
                     self.away_since = None;
+                    self.locked_until = now_s + t.lockout_s as f64;
                 }
             }
             Driver::Controller => {
-                let away = distance.is_some_and(|d| d > t.away_m) && speed < t.still_mps;
+                let away = now_s >= self.locked_until && distance.is_some_and(|d| d > t.away_m) && speed < t.still_mps;
                 if !away {
                     self.away_since = None;
                 } else {
@@ -208,7 +213,7 @@ mod tests {
         // Held and moving: wrist 25 cm "behind" the tracked origin, hand in view.
         let wrist = Some(Vec3::new(-0.25, 0.0, 0.0));
         for i in 0..GRIP_SAMPLES + 5 {
-            assert_eq!(s.update(i as f64 * 0.02, &obs(true, Vec3::ZERO, 0.5, wrist)), Driver::Controller);
+            assert_eq!(s.update(i as f64 * 0.02, &obs(true, Vec3::ZERO, 0.6, wrist)), Driver::Controller);
         }
         let grip = s.grip().expect("grip learned");
         assert!(grip.distance(Vec3::new(-0.25, 0.0, 0.0)) < 1e-3, "grip {grip}");
@@ -220,6 +225,46 @@ mod tests {
         let away = Some(Vec3::new(-0.25, 0.25, 0.0));
         s.update(20.0, &obs(true, Vec3::ZERO, 0.0, away));
         assert_eq!(s.update(20.15, &obs(true, Vec3::ZERO, 0.0, away)), Driver::Leap);
+    }
+
+    #[test]
+    fn grip_is_frozen_once_learned() {
+        let mut s = Switch::new(Thresholds::default());
+        let wrist = Some(Vec3::new(-0.20, 0.0, 0.0));
+        for i in 0..GRIP_SAMPLES + 5 {
+            s.update(i as f64 * 0.02, &obs(true, Vec3::ZERO, 0.6, wrist));
+        }
+        let learned = s.grip().unwrap();
+        // A wrong hand (mislabeled) seen elsewhere while moving must not shift it.
+        for i in 0..200 {
+            s.update(10.0 + i as f64 * 0.02, &obs(true, Vec3::ZERO, 0.6, Some(Vec3::new(0.1, 0.1, 0.0))));
+        }
+        assert_eq!(s.grip().unwrap(), learned);
+    }
+
+    #[test]
+    fn degraded_controller_pose_changes_nothing() {
+        let mut s = Switch::new(Thresholds::default());
+        let far = Some(Vec3::new(0.5, 0.0, 0.0));
+        // Controller on but its pose not fully tracked: position unknown, so no put-down however long.
+        for i in 0..100 {
+            let mut o = obs(true, Vec3::ZERO, 0.0, far);
+            o.controller_position = None;
+            assert_eq!(s.update(i as f64 * 0.1, &o), Driver::Controller);
+        }
+    }
+
+    #[test]
+    fn hand_back_locks_out_the_next_take_over() {
+        let mut s = Switch::new(Thresholds::default());
+        let far = Some(Vec3::new(0.5, 0.0, 0.0));
+        assert_eq!(s.update(0.0, &obs(false, Vec3::ZERO, 0.0, far)), Driver::Leap);
+        assert_eq!(s.update(1.0, &obs(true, Vec3::ZERO, 0.6, far)), Driver::Controller); // picked up
+        for i in 1..20 {
+            assert_eq!(s.update(1.0 + i as f64 * 0.1, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Controller); // still and far, locked
+        }
+        s.update(3.1, &obs(true, Vec3::ZERO, 0.0, far)); // lockout over, timer starts
+        assert_eq!(s.update(3.7, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Leap);
     }
 
     #[test]

@@ -18,6 +18,7 @@
     "nearDistance": 0.15,
     "awayTime": 0.1,
     "stillSpeed": 0.15,
-    "pickupSpeed": 0.4
+    "pickupSpeed": 0.4,
+    "lockoutTime": 2.0
   }
 }
