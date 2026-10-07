@@ -19,6 +19,7 @@
     "awayTime": 0.1,
     "stillSpeed": 0.15,
     "pickupSpeed": 0.4,
-    "lockoutTime": 2.0
+    "switchSpacing": 2.0,
+    "degradedTime": 2.0
   }
 }

@@ -23,13 +23,15 @@ pub struct Thresholds {
     pub away_s: f32,
     pub still_mps: f32,
     pub pickup_mps: f32,
-    /// After a hand-back, no take-over for this long.
-    pub lockout_s: f32,
+    /// Minimum time between two transitions of one hand, either direction.
+    pub spacing_s: f32,
+    /// A controller whose pose stays degraded this long counts as put down.
+    pub degraded_s: f32,
 }
 
 impl Default for Thresholds {
     fn default() -> Thresholds {
-        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 0.1, still_mps: 0.15, pickup_mps: 0.4, lockout_s: 2.0 }
+        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 0.1, still_mps: 0.15, pickup_mps: 0.4, spacing_s: 2.0, degraded_s: 2.0 }
     }
 }
 
@@ -42,7 +44,8 @@ pub struct Observation {
     /// Whether the controller has been identified at all; before that nothing is known.
     pub controller_known: bool,
     pub controller_on: bool,
-    /// The controller's position, only when its pose is fully tracked (optical lock).
+    /// The controller's position when its pose is fully tracked (optical lock); None while
+    /// degraded or invalid.
     pub controller_position: Option<Vec3>,
     pub controller_rotation: Quat,
     pub controller_velocity: Vec3,
@@ -54,7 +57,10 @@ pub struct Switch {
     state: Driver,
     away_since: Option<f64>,
     controller_known: bool,
+    /// No transition before this time (spacing).
     locked_until: f64,
+    /// Since when the controller's pose has been degraded while on.
+    degraded_since: Option<f64>,
     /// Wrist position in the controller's frame while held, and how many samples went in.
     grip: Vec3,
     grip_samples: u32,
@@ -66,7 +72,7 @@ const GRIP_SAMPLES: u32 = 45;
 
 impl Switch {
     pub fn new(thresholds: Thresholds) -> Switch {
-        Switch { state: Driver::Controller, away_since: None, controller_known: false, locked_until: 0.0, grip: Vec3::ZERO, grip_samples: 0, thresholds }
+        Switch { state: Driver::Controller, away_since: None, controller_known: false, locked_until: 0.0, degraded_since: None, grip: Vec3::ZERO, grip_samples: 0, thresholds }
     }
 
     /// The learned grip point (wrist in the controller frame) once trusted.
@@ -74,10 +80,18 @@ impl Switch {
         (self.grip_samples >= GRIP_SAMPLES).then_some(self.grip)
     }
 
+    fn switch(&mut self, state: Driver, now_s: f64) {
+        self.state = state;
+        self.away_since = None;
+        self.locked_until = now_s + self.thresholds.spacing_s as f64;
+    }
+
     /// `now_s` is any monotonic clock in seconds.
     pub fn update(&mut self, now_s: f64, o: &Observation) -> Driver {
         if !o.controller_on {
+            // Power decides at once; spacing applies to the distance rules only.
             self.away_since = None;
+            self.degraded_since = None;
             self.controller_known = o.controller_known;
             self.state = Driver::Leap;
             return self.state;
@@ -91,43 +105,57 @@ impl Switch {
         if o.force_controller {
             return self.state;
         }
-        let t = &self.thresholds;
+        let t = self.thresholds;
         let speed = o.controller_velocity.length();
-        let distance = match (o.hand_position, o.controller_position) {
-            (Some(hand), Some(controller)) => {
-                let local = o.controller_rotation.inverse() * (hand - controller);
-                // Learn the grip once: controller driving, clearly moving, hand seen within reach;
-                // frozen after GRIP_SAMPLES so a mislabeled hand later cannot move it.
-                if self.state == Driver::Controller && self.grip_samples < GRIP_SAMPLES && speed > 0.5 && local.length() < 0.3 {
+        let may_switch = now_s >= self.locked_until;
+
+        // Degraded pose (controller on, position unknown): decide nothing by distance; after a
+        // while it counts as put down.
+        let Some(controller) = o.controller_position else {
+            let since = *self.degraded_since.get_or_insert(now_s);
+            if self.state == Driver::Controller && may_switch && now_s - since >= t.degraded_s as f64 {
+                self.switch(Driver::Leap, now_s);
+            } else if self.state == Driver::Leap && may_switch && speed > t.pickup_mps {
+                // Gyros still report motion: a clear move picks it up even without optical lock.
+                self.switch(Driver::Controller, now_s);
+            }
+            return self.state;
+        };
+        self.degraded_since = None;
+
+        let distance = o.hand_position.map(|hand| {
+            let local = o.controller_rotation.inverse() * (hand - controller);
+            // Learn the grip while the controller drives and clearly moves with the hand in view:
+            // quickly in the first second, then slowly and only near the point already known.
+            if self.state == Driver::Controller && speed > 0.5 {
+                if self.grip_samples < GRIP_SAMPLES && local.length() < 0.3 {
                     self.grip = self.grip.lerp(local, 1.0 / (self.grip_samples as f32 + 1.0));
                     self.grip_samples += 1;
+                } else if self.grip_samples >= GRIP_SAMPLES && local.distance(self.grip) < 0.25 {
+                    self.grip = self.grip.lerp(local, 0.02);
                 }
-                let reference = match self.grip() {
-                    Some(grip) => controller + o.controller_rotation * grip,
-                    None => controller,
-                };
-                Some(hand.distance(reference))
             }
-            _ => None,
-        };
+            let reference = match self.grip() {
+                Some(grip) => controller + o.controller_rotation * grip,
+                None => controller,
+            };
+            hand.distance(reference)
+        });
         match self.state {
             Driver::Leap => {
-                if speed > t.pickup_mps || distance.is_some_and(|d| d < t.near_m) {
-                    self.state = Driver::Controller;
-                    self.away_since = None;
-                    self.locked_until = now_s + t.lockout_s as f64;
+                if may_switch && (speed > t.pickup_mps || distance.is_some_and(|d| d < t.near_m)) {
+                    self.switch(Driver::Controller, now_s);
                 }
             }
             Driver::Controller => {
-                let away = now_s >= self.locked_until && distance.is_some_and(|d| d > t.away_m) && speed < t.still_mps;
+                let away = may_switch && distance.is_some_and(|d| d > t.away_m) && speed < t.still_mps;
                 if !away {
                     self.away_since = None;
                 } else {
                     let delay = if self.grip().is_some() { t.away_s } else { t.away_s.max(0.5) };
                     let since = *self.away_since.get_or_insert(now_s);
                     if now_s - since >= delay as f64 {
-                        self.state = Driver::Leap;
-                        self.away_since = None;
+                        self.switch(Driver::Leap, now_s);
                     }
                 }
             }
@@ -228,43 +256,60 @@ mod tests {
     }
 
     #[test]
-    fn grip_is_frozen_once_learned() {
+    fn grip_refines_only_near_itself() {
         let mut s = Switch::new(Thresholds::default());
         let wrist = Some(Vec3::new(-0.20, 0.0, 0.0));
         for i in 0..GRIP_SAMPLES + 5 {
             s.update(i as f64 * 0.02, &obs(true, Vec3::ZERO, 0.6, wrist));
         }
         let learned = s.grip().unwrap();
-        // A wrong hand (mislabeled) seen elsewhere while moving must not shift it.
+        // A mislabeled hand seen elsewhere while moving must not shift it.
         for i in 0..200 {
             s.update(10.0 + i as f64 * 0.02, &obs(true, Vec3::ZERO, 0.6, Some(Vec3::new(0.1, 0.1, 0.0))));
         }
         assert_eq!(s.grip().unwrap(), learned);
-    }
-
-    #[test]
-    fn degraded_controller_pose_changes_nothing() {
-        let mut s = Switch::new(Thresholds::default());
-        let far = Some(Vec3::new(0.5, 0.0, 0.0));
-        // Controller on but its pose not fully tracked: position unknown, so no put-down however long.
-        for i in 0..100 {
-            let mut o = obs(true, Vec3::ZERO, 0.0, far);
-            o.controller_position = None;
-            assert_eq!(s.update(i as f64 * 0.1, &o), Driver::Controller);
+        // An honest hand a few cm off does refine it, slowly.
+        for i in 0..300 {
+            s.update(20.0 + i as f64 * 0.02, &obs(true, Vec3::ZERO, 0.6, Some(Vec3::new(-0.17, 0.0, 0.0))));
         }
+        let refined = s.grip().unwrap();
+        assert!(refined.x > learned.x + 0.02 && refined.x < -0.165, "refined {refined}");
     }
 
     #[test]
-    fn hand_back_locks_out_the_next_take_over() {
+    fn degraded_controller_hands_over_after_a_while_and_comes_back_on_a_move() {
         let mut s = Switch::new(Thresholds::default());
         let far = Some(Vec3::new(0.5, 0.0, 0.0));
+        let degraded = |speed: f32| {
+            let mut o = obs(true, Vec3::ZERO, speed, far);
+            o.controller_position = None;
+            o
+        };
+        // Position unknown: no distance decision, Leap only after degraded_s.
+        assert_eq!(s.update(0.0, &degraded(0.0)), Driver::Controller);
+        assert_eq!(s.update(1.5, &degraded(0.0)), Driver::Controller);
+        assert_eq!(s.update(2.1, &degraded(0.0)), Driver::Leap);
+        // Gyros report a clear move while still degraded: picked up (after the spacing).
+        assert_eq!(s.update(3.0, &degraded(0.8)), Driver::Leap);
+        assert_eq!(s.update(4.2, &degraded(0.8)), Driver::Controller);
+    }
+
+    #[test]
+    fn transitions_are_spaced_in_both_directions() {
+        let mut s = Switch::new(Thresholds::default());
+        let far = Some(Vec3::new(0.5, 0.0, 0.0));
+        let near = Some(Vec3::new(0.05, 0.0, 0.0));
         assert_eq!(s.update(0.0, &obs(false, Vec3::ZERO, 0.0, far)), Driver::Leap);
         assert_eq!(s.update(1.0, &obs(true, Vec3::ZERO, 0.6, far)), Driver::Controller); // picked up
+        // Put down right away: not before the spacing is over.
         for i in 1..20 {
-            assert_eq!(s.update(1.0 + i as f64 * 0.1, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Controller); // still and far, locked
+            assert_eq!(s.update(1.0 + i as f64 * 0.1, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Controller);
         }
-        s.update(3.1, &obs(true, Vec3::ZERO, 0.0, far)); // lockout over, timer starts
-        assert_eq!(s.update(3.7, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Leap);
+        s.update(3.05, &obs(true, Vec3::ZERO, 0.0, far)); // spacing over: the put-down timer starts (0.5 s, grip not learned)
+        assert_eq!(s.update(3.6, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Leap);
+        // Grab it again at once: hand at the controller, but the spacing holds for 2 s.
+        assert_eq!(s.update(3.8, &obs(true, Vec3::ZERO, 0.0, near)), Driver::Leap);
+        assert_eq!(s.update(5.7, &obs(true, Vec3::ZERO, 0.0, near)), Driver::Controller);
     }
 
     #[test]
