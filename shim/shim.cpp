@@ -2,6 +2,7 @@
 // C wrappers over the vrserver host interfaces for Rust to call (lfh_*). No logic lives here.
 #include "openvr_driver.h"
 #include "shim.h"
+#include "hooks.h"
 
 #include <cstring>
 
@@ -49,7 +50,11 @@ public:
     EVRInitError Init(IVRDriverContext* pDriverContext) override
     {
         VR_INIT_SERVER_DRIVER_CONTEXT(pDriverContext);
-        return static_cast<EVRInitError>(lf_init());
+        EVRInitError result = static_cast<EVRInitError>(lf_init());
+        if (result == VRInitError_None && lfh_settings_bool("driver_leapfrog", "passthrough", false)) {
+            lf_hooks::install(pDriverContext);
+        }
+        return result;
     }
 
     void Cleanup() override
@@ -106,6 +111,7 @@ extern "C" bool lfh_tracked_device_added(const char* serial, int32_t device_clas
 
 extern "C" void lfh_pose_updated(uint32_t object_id, const void* driver_pose)
 {
+    lf_hooks::OwnCall own;
     VRServerDriverHost()->TrackedDevicePoseUpdated(object_id, *static_cast<const DriverPose_t*>(driver_pose), sizeof(DriverPose_t));
 }
 
@@ -152,12 +158,14 @@ extern "C" uint32_t lfh_get_prop_string(uint64_t container, int32_t prop, char* 
 extern "C" int32_t lfh_create_skeleton_component(uint64_t container, const char* name, const char* skeleton_path,
                                                  const char* base_pose_path, int32_t tracking_level, uint64_t* handle)
 {
+    lf_hooks::OwnCall own;
     return VRDriverInput()->CreateSkeletonComponent(container, name, skeleton_path, base_pose_path,
         static_cast<EVRSkeletalTrackingLevel>(tracking_level), nullptr, 0, handle);
 }
 
 extern "C" int32_t lfh_update_skeleton(uint64_t handle, int32_t motion_range, const void* bones, uint32_t count)
 {
+    lf_hooks::OwnCall own;
     return VRDriverInput()->UpdateSkeletonComponent(handle, static_cast<EVRSkeletalMotionRange>(motion_range),
         static_cast<const VRBoneTransform_t*>(bones), count);
 }

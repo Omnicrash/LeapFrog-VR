@@ -3,6 +3,8 @@ use std::env;
 fn main() {
     println!("cargo:rerun-if-changed=shim/shim.cpp");
     println!("cargo:rerun-if-changed=shim/shim.h");
+    println!("cargo:rerun-if-changed=shim/hooks.cpp");
+    println!("cargo:rerun-if-changed=shim/hooks.h");
     println!("cargo:rerun-if-env-changed=LEAPSDK_LIB_PATH");
 
     // `cargo test --features host-stubs` on the build host: no shim, no LeapC.
@@ -13,6 +15,7 @@ fn main() {
     cc::Build::new()
         .cpp(true)
         .file("shim/shim.cpp")
+        .file("shim/hooks.cpp")
         .include("external/openvr/headers")
         .include("shim")
         .flag("/std:c++17")

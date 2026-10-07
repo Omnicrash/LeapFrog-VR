@@ -7,6 +7,7 @@
 
 mod controllers;
 mod hand;
+mod hooks;
 mod host;
 mod leap;
 mod log;

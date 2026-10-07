@@ -21,6 +21,11 @@ int32_t lf_hand_activate(uint32_t hand, uint32_t object_id);
 void lf_hand_deactivate(uint32_t hand);
 void lf_hand_enter_standby(uint32_t hand);
 void lf_hand_get_pose(uint32_t hand, void* driver_pose_out);
+// LF-6 passthrough hooks (shim/hooks.cpp): other drivers' calls, which Rust may edit in place.
+void lf_hook_pose(uint32_t object_id, void* driver_pose);
+int32_t lf_hook_skeleton_create(uint64_t container, const char* name, const char* skeleton_path, int32_t tracking_level);
+void lf_hook_skeleton_created(uint64_t container, uint64_t handle);
+void lf_hook_skeleton_update(uint64_t handle, int32_t motion_range, void* bones, uint32_t count);
 
 void lfh_layout(uint32_t* driver_pose, uint32_t* tracked_pose, uint32_t* bone_transform);
 void lfh_log(const char* msg);
