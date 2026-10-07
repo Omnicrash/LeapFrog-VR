@@ -20,6 +20,7 @@
     "awayTime": 0.5,
     "stillSpeed": 0.15,
     "pickupSpeed": 0.4,
-    "switchSpacing": 2.0
+    "switchSpacing": 2.0,
+    "deadSpotTime": 3.0
   }
 }

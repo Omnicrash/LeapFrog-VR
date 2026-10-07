@@ -25,11 +25,14 @@ pub struct Thresholds {
     pub pickup_mps: f32,
     /// Minimum time between two transitions of one hand, either direction.
     pub spacing_s: f32,
+    /// Dead spot: how long a controller must lie untracked and still, with the hand seen, before
+    /// the hand takes over. 0 disables the rule.
+    pub dead_s: f32,
 }
 
 impl Default for Thresholds {
     fn default() -> Thresholds {
-        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 0.5, still_mps: 0.15, pickup_mps: 0.4, spacing_s: 2.0 }
+        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 0.5, still_mps: 0.15, pickup_mps: 0.4, spacing_s: 2.0, dead_s: 3.0 }
     }
 }
 
@@ -47,6 +50,8 @@ pub struct Observation {
     pub controller_position: Option<Vec3>,
     pub controller_rotation: Quat,
     pub controller_velocity: Vec3,
+    /// From the gyro, so it holds up without optical tracking (rad/s).
+    pub controller_angular_velocity: Vec3,
     pub hand_position: Option<Vec3>,
 }
 
@@ -54,6 +59,8 @@ pub struct Observation {
 pub struct Switch {
     state: Driver,
     away_since: Option<f64>,
+    /// Since when the untracked controller has lain still with the hand in view.
+    dark_since: Option<f64>,
     controller_known: bool,
     /// No transition before this time (spacing).
     locked_until: f64,
@@ -66,9 +73,13 @@ pub struct Switch {
 /// Samples before the learned grip point is trusted over the tracked origin.
 const GRIP_SAMPLES: u32 = 45;
 
+/// Gyro reading below which an untracked controller counts as lying still (rad/s); a hand holding
+/// one is rarely this steady for `dead_s`, a table always is.
+const DEAD_TURN_RPS: f32 = 0.3;
+
 impl Switch {
     pub fn new(thresholds: Thresholds) -> Switch {
-        Switch { state: Driver::Controller, away_since: None, controller_known: false, locked_until: 0.0, grip: Vec3::ZERO, grip_samples: 0, thresholds }
+        Switch { state: Driver::Controller, away_since: None, dark_since: None, controller_known: false, locked_until: 0.0, grip: Vec3::ZERO, grip_samples: 0, thresholds }
     }
 
     /// The learned grip point (wrist in the controller frame) once trusted.
@@ -79,6 +90,7 @@ impl Switch {
     fn switch(&mut self, state: Driver, now_s: f64) {
         self.state = state;
         self.away_since = None;
+        self.dark_since = None;
         self.locked_until = now_s + self.thresholds.spacing_s as f64;
     }
 
@@ -87,6 +99,7 @@ impl Switch {
         if !o.controller_on {
             // Power decides at once; spacing applies to the distance rules only.
             self.away_since = None;
+            self.dark_since = None;
             self.controller_known = o.controller_known;
             self.state = Driver::Leap;
             return self.state;
@@ -95,6 +108,7 @@ impl Switch {
             // Found powered on, or forced: in use until proven put down.
             self.state = Driver::Controller;
             self.away_since = None;
+            self.dark_since = None;
         }
         self.controller_known = o.controller_known;
         if o.force_controller {
@@ -104,13 +118,27 @@ impl Switch {
         let speed = o.controller_velocity.length();
         let may_switch = now_s >= self.locked_until;
 
-        // Degraded pose (controller on, no optical lock): decide nothing. Its gyro-only pose
-        // drifts and its velocity is noise; a controller SteamVR cannot see keeps whatever state
-        // it had. Hands for a controller in a dead tracking spot come from its power button.
+        // Degraded pose (controller on, no optical lock): its gyro-only position drifts and its
+        // velocity is noise, so the distance rules are off. One rule remains, for a controller
+        // put down where the base stations cannot see it (doc/Background.md, "The dead-spot left
+        // hand"): lying still by its gyro, with the hand seen somewhere, for `dead_s`, the hand
+        // takes over. It comes back the normal way, once the controller is tracked again and
+        // moves or is near the hand; no pick-up from the gyro, which oscillated on the FBT night.
         let Some(controller) = o.controller_position else {
             self.away_since = None;
+            let resting = self.state == Driver::Controller && may_switch && t.dead_s > 0.0
+                && o.hand_position.is_some() && o.controller_angular_velocity.length() < DEAD_TURN_RPS;
+            if !resting {
+                self.dark_since = None;
+            } else {
+                let since = *self.dark_since.get_or_insert(now_s);
+                if now_s - since >= t.dead_s as f64 {
+                    self.switch(Driver::Leap, now_s);
+                }
+            }
             return self.state;
         };
+        self.dark_since = None;
 
         let distance = o.hand_position.map(|hand| {
             let local = o.controller_rotation.inverse() * (hand - controller);
@@ -165,6 +193,7 @@ mod tests {
             controller_position: Some(controller),
             controller_rotation: Quat::IDENTITY,
             controller_velocity: Vec3::new(speed, 0.0, 0.0),
+            controller_angular_velocity: Vec3::ZERO,
             hand_position: hand,
         }
     }
@@ -267,23 +296,65 @@ mod tests {
     }
 
     #[test]
-    fn degraded_controller_changes_nothing() {
+    fn degraded_controller_decides_nothing_unless_resting() {
         let far = Some(Vec3::new(0.5, 0.0, 0.0));
-        let degraded = |speed: f32| {
-            let mut o = obs(true, Vec3::ZERO, speed, far);
+        let degraded = |speed: f32, hand: Option<Vec3>, turn: f32| {
+            let mut o = obs(true, Vec3::ZERO, speed, hand);
             o.controller_position = None;
+            o.controller_angular_velocity = Vec3::new(0.0, turn, 0.0);
             o
         };
-        // Controller driving, then untracked for a long time, still or "moving": stays.
+        // Controller driving, untracked for a long time, hand not seen: stays, whatever the
+        // (noise) velocity says.
         let mut s = Switch::new(Thresholds::default());
         for i in 0..300 {
-            assert_eq!(s.update(i as f64 * 0.1, &degraded(if i % 2 == 0 { 0.0 } else { 0.8 })), Driver::Controller);
+            assert_eq!(s.update(i as f64 * 0.1, &degraded(if i % 2 == 0 { 0.0 } else { 0.8 }, None, 0.0)), Driver::Controller);
         }
-        // Leap driving (controller was off), controller comes on untracked: stays Leap.
+        // Hand seen, but the controller keeps turning (it is in a hand): stays.
+        let mut s = Switch::new(Thresholds::default());
+        for i in 0..300 {
+            assert_eq!(s.update(i as f64 * 0.1, &degraded(0.0, far, 1.0)), Driver::Controller);
+        }
+        // Leap driving (controller was off), controller comes on untracked and still: stays Leap.
         let mut s = Switch::new(Thresholds::default());
         assert_eq!(s.update(0.0, &obs(false, Vec3::ZERO, 0.0, far)), Driver::Leap);
         for i in 1..300 {
-            assert_eq!(s.update(i as f64 * 0.1, &degraded(0.8)), Driver::Leap);
+            assert_eq!(s.update(i as f64 * 0.1, &degraded(0.8, far, 0.0)), Driver::Leap);
+        }
+    }
+
+    #[test]
+    fn dead_spot_hands_over_when_still_and_hand_seen() {
+        let far = Some(Vec3::new(0.5, 0.0, 0.0));
+        let near = Some(Vec3::new(0.05, 0.0, 0.0));
+        let dark = |hand: Option<Vec3>, turn: f32| {
+            let mut o = obs(true, Vec3::ZERO, 0.0, hand);
+            o.controller_position = None;
+            o.controller_angular_velocity = Vec3::new(turn, 0.0, 0.0);
+            o
+        };
+        let mut s = Switch::new(Thresholds::default());
+        assert_eq!(s.update(0.0, &obs(true, Vec3::ZERO, 0.6, near)), Driver::Controller);
+        // Put down out of sight at t=3: still, hand in view, but not for 3 s yet.
+        for i in 0..29 {
+            assert_eq!(s.update(3.0 + i as f64 * 0.1, &dark(far, 0.0)), Driver::Controller, "at {i}");
+        }
+        // A nudge resets the timer: 3 s of rest again from here.
+        assert_eq!(s.update(5.9, &dark(far, 0.5)), Driver::Controller);
+        assert_eq!(s.update(6.0, &dark(far, 0.0)), Driver::Controller);
+        assert_eq!(s.update(8.9, &dark(far, 0.0)), Driver::Controller);
+        assert_eq!(s.update(9.0, &dark(far, 0.0)), Driver::Leap);
+        // Still dark and still: no flip-flop.
+        for i in 0..100 {
+            assert_eq!(s.update(9.1 + i as f64 * 0.1, &dark(far, 0.0)), Driver::Leap);
+        }
+        // Picked up: tracked again with the hand at it (spacing is long over).
+        assert_eq!(s.update(20.0, &obs(true, Vec3::ZERO, 0.0, near)), Driver::Controller);
+        // deadSpotTime 0 disables the rule.
+        let mut s = Switch::new(Thresholds { dead_s: 0.0, ..Thresholds::default() });
+        s.update(0.0, &obs(true, Vec3::ZERO, 0.6, near));
+        for i in 0..100 {
+            assert_eq!(s.update(1.0 + i as f64 * 0.1, &dark(far, 0.0)), Driver::Controller);
         }
     }
 

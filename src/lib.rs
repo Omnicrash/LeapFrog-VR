@@ -104,6 +104,7 @@ fn read_thresholds() -> Thresholds {
         still_mps: host::setting_float("stillSpeed", d.still_mps),
         pickup_mps: host::setting_float("pickupSpeed", d.pickup_mps),
         spacing_s: host::setting_float("switchSpacing", d.spacing_s),
+        dead_s: host::setting_float("deadSpotTime", d.dead_s),
     }
 }
 
@@ -249,6 +250,7 @@ impl State {
                 }),
                 controller_rotation: controller.filter(|c| c.pose_is_valid).map(|c| math::Head::from_pose(c).rotation).unwrap_or(glam::Quat::IDENTITY),
                 controller_velocity: controller.map(|c| Vec3::from(c.velocity)).unwrap_or(Vec3::ZERO),
+                controller_angular_velocity: controller.map(|c| Vec3::from(c.angular_velocity)).unwrap_or(Vec3::ZERO),
                 hand_position,
             };
             let driver = self.switches[i].update(now_s, &observation);
