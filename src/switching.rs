@@ -25,13 +25,11 @@ pub struct Thresholds {
     pub pickup_mps: f32,
     /// Minimum time between two transitions of one hand, either direction.
     pub spacing_s: f32,
-    /// A controller whose pose stays degraded this long counts as put down.
-    pub degraded_s: f32,
 }
 
 impl Default for Thresholds {
     fn default() -> Thresholds {
-        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 0.1, still_mps: 0.15, pickup_mps: 0.4, spacing_s: 2.0, degraded_s: 2.0 }
+        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 1.5, still_mps: 0.15, pickup_mps: 0.4, spacing_s: 2.0 }
     }
 }
 
@@ -59,8 +57,6 @@ pub struct Switch {
     controller_known: bool,
     /// No transition before this time (spacing).
     locked_until: f64,
-    /// Since when the controller's pose has been degraded while on.
-    degraded_since: Option<f64>,
     /// Wrist position in the controller's frame while held, and how many samples went in.
     grip: Vec3,
     grip_samples: u32,
@@ -72,7 +68,7 @@ const GRIP_SAMPLES: u32 = 45;
 
 impl Switch {
     pub fn new(thresholds: Thresholds) -> Switch {
-        Switch { state: Driver::Controller, away_since: None, controller_known: false, locked_until: 0.0, degraded_since: None, grip: Vec3::ZERO, grip_samples: 0, thresholds }
+        Switch { state: Driver::Controller, away_since: None, controller_known: false, locked_until: 0.0, grip: Vec3::ZERO, grip_samples: 0, thresholds }
     }
 
     /// The learned grip point (wrist in the controller frame) once trusted.
@@ -91,7 +87,6 @@ impl Switch {
         if !o.controller_on {
             // Power decides at once; spacing applies to the distance rules only.
             self.away_since = None;
-            self.degraded_since = None;
             self.controller_known = o.controller_known;
             self.state = Driver::Leap;
             return self.state;
@@ -109,19 +104,13 @@ impl Switch {
         let speed = o.controller_velocity.length();
         let may_switch = now_s >= self.locked_until;
 
-        // Degraded pose (controller on, position unknown): decide nothing by distance; after a
-        // while it counts as put down.
+        // Degraded pose (controller on, no optical lock): decide nothing. Its gyro-only pose
+        // drifts and its velocity is noise; a controller SteamVR cannot see keeps whatever state
+        // it had. Hands for a controller in a dead tracking spot come from its power button.
         let Some(controller) = o.controller_position else {
-            let since = *self.degraded_since.get_or_insert(now_s);
-            // No pick-up while degraded: a controller without optical lock reports a velocity
-            // from its gyros that is noise when it lies still (one lying in a dead tracking spot
-            // "moved" every two seconds, 2026-10-07). It comes back once it tracks again.
-            if self.state == Driver::Controller && may_switch && now_s - since >= t.degraded_s as f64 {
-                self.switch(Driver::Leap, now_s);
-            }
+            self.away_since = None;
             return self.state;
         };
-        self.degraded_since = None;
 
         let distance = o.hand_position.map(|hand| {
             let local = o.controller_rotation.inverse() * (hand - controller);
@@ -252,7 +241,8 @@ mod tests {
         // Put down: hand 25 cm from the grip point; the short delay applies once learned.
         let away = Some(Vec3::new(-0.25, 0.25, 0.0));
         s.update(20.0, &obs(true, Vec3::ZERO, 0.0, away));
-        assert_eq!(s.update(20.15, &obs(true, Vec3::ZERO, 0.0, away)), Driver::Leap);
+        assert_eq!(s.update(21.0, &obs(true, Vec3::ZERO, 0.0, away)), Driver::Controller);
+        assert_eq!(s.update(21.6, &obs(true, Vec3::ZERO, 0.0, away)), Driver::Leap);
     }
 
     #[test]
@@ -277,24 +267,24 @@ mod tests {
     }
 
     #[test]
-    fn degraded_controller_hands_over_and_stays_until_tracked_again() {
-        let mut s = Switch::new(Thresholds::default());
+    fn degraded_controller_changes_nothing() {
         let far = Some(Vec3::new(0.5, 0.0, 0.0));
         let degraded = |speed: f32| {
             let mut o = obs(true, Vec3::ZERO, speed, far);
             o.controller_position = None;
             o
         };
-        // Position unknown: no distance decision, Leap only after degraded_s.
-        assert_eq!(s.update(0.0, &degraded(0.0)), Driver::Controller);
-        assert_eq!(s.update(1.5, &degraded(0.0)), Driver::Controller);
-        assert_eq!(s.update(2.1, &degraded(0.0)), Driver::Leap);
-        // Gyro "velocity" while still degraded is noise: no pick-up, however long.
-        for i in 0..100 {
-            assert_eq!(s.update(3.0 + i as f64 * 0.1, &degraded(0.8)), Driver::Leap);
+        // Controller driving, then untracked for a long time, still or "moving": stays.
+        let mut s = Switch::new(Thresholds::default());
+        for i in 0..300 {
+            assert_eq!(s.update(i as f64 * 0.1, &degraded(if i % 2 == 0 { 0.0 } else { 0.8 })), Driver::Controller);
         }
-        // Optical tracking back and a clear move: picked up.
-        assert_eq!(s.update(20.0, &obs(true, Vec3::ZERO, 0.8, far)), Driver::Controller);
+        // Leap driving (controller was off), controller comes on untracked: stays Leap.
+        let mut s = Switch::new(Thresholds::default());
+        assert_eq!(s.update(0.0, &obs(false, Vec3::ZERO, 0.0, far)), Driver::Leap);
+        for i in 1..300 {
+            assert_eq!(s.update(i as f64 * 0.1, &degraded(0.8)), Driver::Leap);
+        }
     }
 
     #[test]
@@ -308,11 +298,12 @@ mod tests {
         for i in 1..20 {
             assert_eq!(s.update(1.0 + i as f64 * 0.1, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Controller);
         }
-        s.update(3.05, &obs(true, Vec3::ZERO, 0.0, far)); // spacing over: the put-down timer starts (0.5 s, grip not learned)
-        assert_eq!(s.update(3.6, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Leap);
+        s.update(3.05, &obs(true, Vec3::ZERO, 0.0, far)); // spacing over: the put-down timer starts (1.5 s)
+        assert_eq!(s.update(4.0, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Controller);
+        assert_eq!(s.update(4.6, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Leap);
         // Grab it again at once: hand at the controller, but the spacing holds for 2 s.
-        assert_eq!(s.update(3.8, &obs(true, Vec3::ZERO, 0.0, near)), Driver::Leap);
-        assert_eq!(s.update(5.7, &obs(true, Vec3::ZERO, 0.0, near)), Driver::Controller);
+        assert_eq!(s.update(4.8, &obs(true, Vec3::ZERO, 0.0, near)), Driver::Leap);
+        assert_eq!(s.update(6.7, &obs(true, Vec3::ZERO, 0.0, near)), Driver::Controller);
     }
 
     #[test]

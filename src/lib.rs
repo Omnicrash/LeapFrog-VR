@@ -98,7 +98,6 @@ fn read_thresholds() -> Thresholds {
         still_mps: host::setting_float("stillSpeed", d.still_mps),
         pickup_mps: host::setting_float("pickupSpeed", d.pickup_mps),
         spacing_s: host::setting_float("switchSpacing", d.spacing_s),
-        degraded_s: host::setting_float("degradedTime", d.degraded_s),
     }
 }
 
