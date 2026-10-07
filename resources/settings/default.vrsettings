@@ -2,6 +2,7 @@
   "driver_leapfrog": {
     "enable": true,
     "debugPanic": false,
+    "controllerType": "vd_hand_controller",
     "manageService": true,
     "trackingPerformance": "ultra",
     "handOnObject": true,
