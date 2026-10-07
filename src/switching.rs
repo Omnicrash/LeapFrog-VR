@@ -113,11 +113,11 @@ impl Switch {
         // while it counts as put down.
         let Some(controller) = o.controller_position else {
             let since = *self.degraded_since.get_or_insert(now_s);
+            // No pick-up while degraded: a controller without optical lock reports a velocity
+            // from its gyros that is noise when it lies still (one lying in a dead tracking spot
+            // "moved" every two seconds, 2026-10-07). It comes back once it tracks again.
             if self.state == Driver::Controller && may_switch && now_s - since >= t.degraded_s as f64 {
                 self.switch(Driver::Leap, now_s);
-            } else if self.state == Driver::Leap && may_switch && speed > t.pickup_mps {
-                // Gyros still report motion: a clear move picks it up even without optical lock.
-                self.switch(Driver::Controller, now_s);
             }
             return self.state;
         };
@@ -277,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn degraded_controller_hands_over_after_a_while_and_comes_back_on_a_move() {
+    fn degraded_controller_hands_over_and_stays_until_tracked_again() {
         let mut s = Switch::new(Thresholds::default());
         let far = Some(Vec3::new(0.5, 0.0, 0.0));
         let degraded = |speed: f32| {
@@ -289,9 +289,12 @@ mod tests {
         assert_eq!(s.update(0.0, &degraded(0.0)), Driver::Controller);
         assert_eq!(s.update(1.5, &degraded(0.0)), Driver::Controller);
         assert_eq!(s.update(2.1, &degraded(0.0)), Driver::Leap);
-        // Gyros report a clear move while still degraded: picked up (after the spacing).
-        assert_eq!(s.update(3.0, &degraded(0.8)), Driver::Leap);
-        assert_eq!(s.update(4.2, &degraded(0.8)), Driver::Controller);
+        // Gyro "velocity" while still degraded is noise: no pick-up, however long.
+        for i in 0..100 {
+            assert_eq!(s.update(3.0 + i as f64 * 0.1, &degraded(0.8)), Driver::Leap);
+        }
+        // Optical tracking back and a clear move: picked up.
+        assert_eq!(s.update(20.0, &obs(true, Vec3::ZERO, 0.8, far)), Driver::Controller);
     }
 
     #[test]
