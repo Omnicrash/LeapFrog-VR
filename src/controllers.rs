@@ -15,13 +15,19 @@ impl Controllers {
         Controllers { index: [None, None], frame: 0 }
     }
 
-    /// Call once per frame with this frame's raw poses; rescans for missing controllers now
-    /// and then, since property lookups per device per frame would be wasteful.
+    /// Call once per frame with this frame's raw poses; rescans now and then while a hand has
+    /// no controller or its controller is off (a second pair switched on gets the slot; the
+    /// scan latched on the first pair for good before), since property lookups per device per
+    /// frame would be wasteful.
     pub fn update(&mut self, poses: &[TrackedDevicePose], own: [Option<u32>; 2]) {
         self.frame = self.frame.wrapping_add(1);
-        if self.index.iter().any(Option::is_none) && self.frame % 30 == 1 {
+        if self.frame % 30 == 1 && self.index.iter().any(|i| !Self::on(*i, poses)) {
             self.scan(poses, own);
         }
+    }
+
+    fn on(index: Option<u32>, poses: &[TrackedDevicePose]) -> bool {
+        index.and_then(|i| poses.get(i as usize)).is_some_and(|p| p.device_is_connected)
     }
 
     /// This hand's controller in this frame's raw poses, once found.
@@ -45,9 +51,11 @@ impl Controllers {
                 Some(host::ROLE_RIGHT_HAND) => 1,
                 _ => continue,
             };
-            if self.index[hand].is_none() {
+            // Take it when the hand has none, or when its own is off and this one is on.
+            let connected = poses.get(i as usize).is_some_and(|p| p.device_is_connected);
+            if self.index[hand].is_none() || (connected && !Self::on(self.index[hand], poses)) {
                 self.index[hand] = Some(i);
-                log!("{} Index controller is device {i}", if hand == 0 { "left" } else { "right" });
+                log!("{} Index controller is device {i}{}", if hand == 0 { "left" } else { "right" }, if connected { "" } else { " (off)" });
             }
         }
     }
