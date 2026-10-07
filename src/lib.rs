@@ -257,7 +257,12 @@ impl State {
                     log!("{} grip point (wrist in the controller frame): {:.3} {:.3} {:.3} m", hand.side(), grip.x, grip.y, grip.z);
                 }
             }
-            hand.apply(driver == Driver::Leap);
+            if hand.apply(driver == Driver::Leap) {
+                self.transitions += 1;
+                if self.transitions >= TRANSITION_WARNING && (self.transitions - TRANSITION_WARNING) % 25 == 0 {
+                    log!("{} hand transitions this session: SteamVR stops rebinding apps after about 125 (VRChat) and 400 (dashboard); restart VRChat or SteamVR when convenient", self.transitions);
+                }
+            }
             hand.publish();
         }
     }
