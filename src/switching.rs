@@ -81,7 +81,7 @@ const GRIP_SAMPLES: u32 = 45;
 /// sessions (within a few cm of this each time: 0.20-0.24 m from the tracked origin, mostly
 /// forward). The reference until the grip is learned; before this prior the origin was the
 /// reference and a held hand measured 0.22-0.25 m "away" (2026-10-08, 03:38).
-pub const GRIP_PRIOR: Vec3 = Vec3::new(0.0, 0.07, 0.21);
+const GRIP_PRIOR: Vec3 = Vec3::new(0.0, 0.07, 0.21);
 
 /// The away threshold while the grip is still the prior, which may be off by a hand's width.
 const AWAY_UNLEARNED_M: f32 = 0.35;

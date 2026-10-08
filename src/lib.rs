@@ -56,15 +56,7 @@ struct State {
     /// Per hand: whether the Leap drives the controller right now, and which controller.
     leap_drives: [bool; 2],
     controller_ids: [Option<u32>; 2],
-    /// Held placement (LF-6): while a controller is held, its root and wrist bones are rewritten
-    /// so VRChat's hand sits at the Leap's wrist, where Leap mode puts it; put-down then moves
-    /// nothing and the hand turns about the real wrist in both modes. Per hand: the Leap pose in
-    /// the controller's frame (the root bone), measured every held frame with the hand seen,
-    /// kept while it is not; and the last wrist bone.
-    held_placement: bool,
-    held_relation: [(Vec3, glam::Quat); 2],
-    /// The last bones the Leap produced per hand, for frames it does not see the hand.
-    last_bones: [[host::BoneTransform; math::BONE_COUNT]; 2],
+
 
     frame: u32,
     transitions: u32,
@@ -175,9 +167,6 @@ pub extern "C" fn lf_init() -> i32 {
             passthrough_both: host::setting_bool("passthroughBoth", false),
             leap_drives: [false, false],
             controller_ids: [None, None],
-            held_placement: host::setting_bool("heldPlacement", true),
-            held_relation: [(switching::GRIP_PRIOR, glam::Quat::IDENTITY); 2],
-            last_bones: [math::open_hand(true), math::open_hand(false)],
             frame: 0,
             transitions: 0,
             debug_panic_pending: host::setting_bool("debugPanic", false),
@@ -309,11 +298,8 @@ impl State {
             }
             if self.frame % 900 == 0 {
                 let grip = self.switches[i].grip();
-                let (hp, hr) = self.held_relation[i];
-                let (y, x, z) = hr.to_euler(glam::EulerRot::YXZ);
-                log!("{} grip point: {}; held relation {:.3} {:.3} {:.3} m, yaw {:.0} pitch {:.0} roll {:.0} deg{}",
+                log!("{} grip point: {}{}",
                     hand.side(), grip.map(|g| format!("{:.3} {:.3} {:.3} m", g.x, g.y, g.z)).unwrap_or_else(|| "prior".to_string()),
-                    hp.x, hp.y, hp.z, y.to_degrees(), x.to_degrees(), z.to_degrees(),
                     if self.passthrough { format!(", {} poses injected, {} bone updates by the controller's driver in the last 10 s", hooks::injected_poses(), hooks::take_bone_updates(i)) } else { String::new() });
             }
             // Passthrough (LF-6): with its controller on, the controller stays the hand device
@@ -322,35 +308,15 @@ impl State {
             let composite = self.passthrough && observation.controller_on;
             let leap_drives = composite && driver == Driver::Leap;
             if composite {
-                // Held placement: while the controller drives and is tracked, measure where the
-                // Leap pose sits in the controller's frame (hand within 12 cm of the grip
-                // reference; kept while the hand is unseen) and report the controller at
-                // controller * relation with the Leap's bones: the same hand frame as Leap mode,
-                // with lighthouse's tracking. Pose plus our bones is the one placement VRChat
-                // has shown right (05:00); rewriting the controller's root and wrist bones
-                // instead put the held hand somewhere else (05:40).
-                let real = hooks::real_pose(i).filter(|r| now - r.at_us < 100_000 && r.valid && r.result == host::TRACKING_RESULT_RUNNING_OK);
-                if let Some((_, _)) = hand.world_pose() {
-                    self.last_bones[i] = *hand.bones();
-                }
+                // While held, the controller's own data passes untouched: an injected pose while
+                // held turns the dashboard model and the pointer with the hand, and the Leap's
+                // bones on a held controller make VRChat drop its buttons (05:50). The placement
+                // difference between a held hand (VRChat's rule) and a Leap hand stays open.
                 let injection = if leap_drives {
                     // The Leap hand device's own pose and full skeleton (04:55): the controller
                     // becomes that device while put down.
                     controller_id.zip(hand.world_pose()).map(|(object_id, (hand_rotation, wrist))| {
-                        hooks::Injection { object_id, rotation: hand_rotation, position: wrist, bones: *hand.bones(), fingers_only: false }
-                    })
-                } else if self.held_placement {
-                    if let (Some(r), Some((hand_rotation, wrist))) = (real, hand.world_pose()) {
-                        if self.switches[i].last_distance().is_some_and(|d| d < 0.12) {
-                            let local_pos = r.rotation.inverse() * (wrist - r.position);
-                            let local_rot = (r.rotation.inverse() * hand_rotation).normalize();
-                            let (p, q) = self.held_relation[i];
-                            self.held_relation[i] = (p.lerp(local_pos, 0.1), q.slerp(local_rot, 0.1).normalize());
-                        }
-                    }
-                    controller_id.zip(real).map(|(object_id, r)| {
-                        let (p, q) = self.held_relation[i];
-                        hooks::Injection { object_id, rotation: (r.rotation * q).normalize(), position: r.position + r.rotation * p, bones: self.last_bones[i], fingers_only: false }
+                        hooks::Injection { object_id, rotation: hand_rotation, position: wrist, bones: *hand.bones() }
                     })
                 } else {
                     None
