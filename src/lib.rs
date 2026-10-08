@@ -252,7 +252,6 @@ impl State {
         let own = [self.hands[0].object_id, self.hands[1].object_id];
         self.controllers.update(&self.poses, own);
         let head = self.poses.first().copied();
-        let now_s = now as f64 * 1e-6;
 
         // Once a second: the live switch (autoPickupSwitch off = stage 1, controller power alone
         // decides) and whether SteamVR's room setup is running, which needs the controllers.
