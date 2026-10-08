@@ -32,7 +32,7 @@ pub struct Thresholds {
 
 impl Default for Thresholds {
     fn default() -> Thresholds {
-        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 0.2, still_mps: 0.3, pickup_mps: 0.4, spacing_s: 0.5, dead_s: 0.0 }
+        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 0.0, still_mps: 0.3, pickup_mps: 0.4, spacing_s: 0.0, dead_s: 0.0 }
     }
 }
 

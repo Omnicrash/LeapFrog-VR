@@ -19,10 +19,10 @@
     "pickupSwitching": true,
     "awayDistance": 0.20,
     "nearDistance": 0.15,
-    "awayTime": 0.2,
+    "awayTime": 0.0,
     "stillSpeed": 0.3,
     "pickupSpeed": 0.4,
-    "switchSpacing": 0.5,
+    "switchSpacing": 0.0,
     "deadSpotTime": 0.0
   }
 }
