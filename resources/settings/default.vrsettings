@@ -15,6 +15,7 @@
     "rotationOffsetZ": 0.0,
     "handInwardOffset": 0.01,
     "passthrough": true,
+    "indexSkeletonFull": true,
     "pickupSwitching": true,
     "awayDistance": 0.20,
     "nearDistance": 0.15,

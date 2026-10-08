@@ -167,7 +167,7 @@ void hook_input(void* object, const char* name)
 bool known_host(const char* name) { return std::strcmp(name, "IVRServerDriverHost_006") == 0; }
 bool known_input(const char* name) { return std::strcmp(name, "IVRDriverInput_003") == 0 || std::strcmp(name, "IVRDriverInput_004") == 0; }
 
-char g_seen[16][48];
+char g_seen[64][48];
 int g_seen_count = 0;
 
 bool first_sight(const char* name)
@@ -177,7 +177,7 @@ bool first_sight(const char* name)
             return false;
         }
     }
-    if (g_seen_count < 16) {
+    if (g_seen_count < 64) {
         std::strncpy(g_seen[g_seen_count], name, sizeof(g_seen[0]) - 1);
         g_seen[g_seen_count][sizeof(g_seen[0]) - 1] = '\0';
         g_seen_count++;

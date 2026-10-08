@@ -71,8 +71,12 @@ pub unsafe extern "C" fn lf_hook_pose(object_id: u32, pose: *mut DriverPose) {
 #[no_mangle]
 pub unsafe extern "C" fn lf_hook_skeleton_create(container: u64, name: *const std::os::raw::c_char, skeleton_path: *const std::os::raw::c_char, tracking_level: i32) -> i32 {
     guard("hook_skeleton_create", tracking_level, || {
-        log!("skeleton {} ({}) on container {container}: level {tracking_level}, passed through", c_str(name), c_str(skeleton_path));
-        tracking_level
+        // Experiment 1 (doc/Passthrough.md): register other drivers' skeletons as Full and see
+        // whether VRChat then treats the Index controllers as hand-tracking devices.
+        let full = crate::host::setting_bool("indexSkeletonFull", true);
+        let level = if full { crate::host::SKELETAL_TRACKING_FULL } else { tracking_level };
+        log!("skeleton {} ({}) on container {container}: level {tracking_level} requested, {level} registered", c_str(name), c_str(skeleton_path));
+        level
     })
 }
 
