@@ -28,7 +28,7 @@ T proc(const char* name) {
 }  // namespace
 
 extern "C" int lfp_connect(const wchar_t* dll, int overlay, char* err, size_t err_len) {
-    g_api = LoadLibraryW(dll);
+    if (!g_api) g_api = LoadLibraryW(dll);
     if (!g_api) {
         snprintf(err, err_len, "openvr_api.dll not loaded (error %lu)", GetLastError());
         return 1;

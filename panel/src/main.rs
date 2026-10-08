@@ -12,8 +12,18 @@
 //! The driver reads most of its settings once a second, so a write shows up in its log within
 //! that.
 
+// No console window when SteamVR launches the panel; a terminal that ran `set` or `get` gets
+// its output through AttachConsole below.
+#![windows_subsystem = "windows"]
+
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn AttachConsole(process_id: u32) -> c_int;
+}
+const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
 
 mod ffi {
     use super::*;
@@ -44,6 +54,8 @@ mod ffi {
 const APP_KEY: &str = "omnicrash.leapfrog.panel";
 
 fn main() {
+    // SAFETY: plain Win32 call; fails harmlessly when there is no parent console.
+    unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["set", key, value] => run(|| set(key, value)),
@@ -175,13 +187,25 @@ fn run(f: impl FnOnce() -> Result<(), String>) -> i32 {
 }
 
 /// VR_Init as a background app (or an overlay app) through the runtime SteamVR registered in
-/// openvrpaths.vrpath.
+/// openvrpaths.vrpath. Never starts SteamVR: an overlay init would (it did, 2026-10-09 01:56),
+/// so a background init, which only connects to a running vrserver, gates it.
 fn connect(overlay: bool) -> Result<(), String> {
     let dll = runtime_dir()?.join("bin").join("win64").join("openvr_api.dll");
     let wide: Vec<u16> = dll.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
     let mut err = vec![0 as c_char; 256];
     // SAFETY: NUL-terminated path, error buffer of the given length.
-    if unsafe { ffi::lfp_connect(wide.as_ptr(), overlay as c_int, err.as_mut_ptr(), err.len()) } != 0 {
+    if unsafe { ffi::lfp_connect(wide.as_ptr(), 0, err.as_mut_ptr(), err.len()) } != 0 {
+        // SAFETY: the shim wrote a NUL-terminated string.
+        let text = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy();
+        return Err(format!("SteamVR: {text}"));
+    }
+    if !overlay {
+        return Ok(());
+    }
+    // SAFETY: connected above; the overlay init replaces the background one.
+    unsafe { ffi::lfp_disconnect() };
+    // SAFETY: as above.
+    if unsafe { ffi::lfp_connect(wide.as_ptr(), 1, err.as_mut_ptr(), err.len()) } != 0 {
         // SAFETY: the shim wrote a NUL-terminated string.
         let text = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy();
         return Err(format!("SteamVR: {text}"));
