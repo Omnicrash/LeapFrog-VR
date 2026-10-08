@@ -9,7 +9,9 @@
 #include "imgui.h"
 #include "backends/imgui_impl_dx11.h"
 
+#include <cmath>
 #include <cstdio>
+#include <cstring>
 
 namespace {
 
@@ -29,9 +31,10 @@ ID3D11Texture2D* g_texture;
 ID3D11RenderTargetView* g_target;
 
 bool g_visible;
-bool g_clicked;
 
 }  // namespace
+
+void read_all();
 
 extern "C" int lfp_overlay_open(const char* thumbnail, char* err, size_t err_len) {
     g_overlay = static_cast<vr::IVROverlay*>(lfp_interface(vr::IVROverlay_Version, err, err_len));
@@ -92,21 +95,239 @@ extern "C" int lfp_overlay_open(const char* thumbnail, char* err, size_t err_len
     ImGuiStyle& style = ImGui::GetStyle();
     style.ScaleAllSizes(2.0f);
     style.WindowRounding = 0.0f;
+    style.FramePadding = ImVec2(18.0f, 14.0f);
+    style.ItemSpacing = ImVec2(16.0f, 14.0f);
+    style.GrabMinSize = 40.0f;
     ImGui_ImplDX11_Init(g_device, g_context);
+    read_all();
     return 0;
 }
 
-// Draws one frame of the panel. Build 2: the tab itself, with one button to prove the pointer.
+// The settings the panel edits. Floats get a stepper row (minus, slider, plus); bools a toggle.
+// `live` ones the driver reads once a second; the others take effect at the next SteamVR start.
+struct FloatSetting {
+    const char* label;
+    const char* key;
+    float min, max, step, def;
+    const char* format;
+    float value;
+    const char* note; // gray explanation under the row, or null
+};
+
+struct BoolSetting {
+    const char* label;
+    const char* key;
+    bool def;
+    bool live;
+    bool value;
+    const char* note; // gray explanation after the label, or null
+    bool confirm_off; // turning it off asks first
+    const char* warning; // amber line under the note, within the row, or null
+};
+
+FloatSetting g_placement[] = {
+    {"Forward / back", "handOffsetZ", -0.25f, 0.25f, 0.01f, -0.08f, "%.2f m", 0, nullptr},
+    {"Up / down", "handOffsetY", -0.25f, 0.25f, 0.01f, 0.06f, "%.2f m", 0, nullptr},
+    {"Left / right", "handOffsetX", -0.25f, 0.25f, 0.01f, -0.01f, "%.2f m", 0, nullptr},
+    {"Inward", "handInwardOffset", -0.10f, 0.10f, 0.005f, 0.01f, "%.3f m", 0, nullptr},
+    {"Pitch", "rotationOffsetX", -45.0f, 45.0f, 1.0f, 0.0f, "%.0f deg", 0, nullptr},
+    {"Yaw", "rotationOffsetY", -45.0f, 45.0f, 1.0f, 0.0f, "%.0f deg", 0, nullptr},
+    {"Roll", "rotationOffsetZ", -45.0f, 45.0f, 1.0f, 0.0f, "%.0f deg", 0, nullptr},
+};
+
+FloatSetting g_switching[] = {
+    {"Away distance", "awayDistance", 0.05f, 0.60f, 0.01f, 0.20f, "%.2f m", 0, "When your hand is this far from a resting controller, hand tracking takes over"},
+    {"Near distance", "nearDistance", 0.05f, 0.40f, 0.01f, 0.15f, "%.2f m", 0, "When your hand comes this close to the controller, it takes over"},
+    {"Still speed", "stillSpeed", 0.0f, 1.0f, 0.05f, 0.30f, "%.2f m/s", 0, "A controller moving slower than this counts as resting"},
+    {"Pickup speed", "pickupSpeed", 0.0f, 1.5f, 0.05f, 0.40f, "%.2f m/s", 0, "A controller moving faster than this counts as picked up"},
+};
+
+BoolSetting g_pickup = {"Automatic switching", "autoPickupSwitch", true, true, true, "If disabled, hands only track while controllers are off", false, nullptr};
+
+BoolSetting g_driver[] = {
+    {"Enabled", "enable", true, false, true, "When off, the driver does nothing", false, nullptr},
+    {"Passthrough", "passthrough", true, false, true, "The controller shows the tracked hand while resting", false, nullptr},
+    {"Full tracking mode", "exposeAsFullTrackingMode", false, false, false, "Tell games the controller is fully hand tracked", false, "Breaks the pointer and the B menu button in VRChat"},
+    {"Manage service", "manageService", true, false, true, "Automatically start and stop the Ultraleap service with SteamVR", false, nullptr},
+    {"Hand on object", "handOnObject", true, false, true, "Hint to the Leap that hands might be holding objects", false, nullptr},
+    {"Fast hand motion", "fastHandMotion", false, false, false, "Favor quick movement over precision", false, nullptr},
+    {"Settings panel", "panel", true, false, true, "Show this tab in the dashboard", true, nullptr},
+};
+
+const char* const PERFORMANCE[] = {"low", "default", "ultra"};
+int g_performance;
+
+float read_float(const FloatSetting& s) {
+    float f;
+    if (lfp_get_float(s.key, &f) == 0) {
+        return f;
+    }
+    int i;
+    return lfp_get_int(s.key, &i) == 0 ? static_cast<float>(i) : s.def;
+}
+
+bool read_bool(const BoolSetting& s) {
+    int b;
+    return lfp_get_bool(s.key, &b) == 0 ? b != 0 : s.def;
+}
+
+void read_all() {
+    for (FloatSetting& s : g_placement) s.value = read_float(s);
+    for (FloatSetting& s : g_switching) s.value = read_float(s);
+    g_pickup.value = read_bool(g_pickup);
+    for (BoolSetting& s : g_driver) s.value = read_bool(s);
+    char buf[32] = {};
+    lfp_get_string("trackingPerformance", buf, sizeof buf);
+    g_performance = 0;
+    for (int i = 0; i < 3; i++) {
+        if (strcmp(buf, PERFORMANCE[i]) == 0) g_performance = i;
+    }
+}
+
+void write(FloatSetting& s, float v) {
+    v = v < s.min ? s.min : v > s.max ? s.max : v;
+    // Steps land on round values, not on float dust.
+    v = roundf(v / s.step) * s.step;
+    if (v != s.value) {
+        s.value = v;
+        lfp_set_float(s.key, v);
+    }
+}
+
+void write(BoolSetting& s, bool v) {
+    if (v != s.value) {
+        s.value = v;
+        lfp_set_bool(s.key, v ? 1 : 0);
+    }
+}
+
+// One row: label, a large minus, the slider with the value on it, a large plus.
+void stepper(FloatSetting& s) {
+    const float button = 90.0f;
+    ImGui::PushID(s.key);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(s.label);
+    ImGui::SameLine(330.0f);
+    if (ImGui::Button("-", ImVec2(button, 0))) write(s, s.value - s.step);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - button - ImGui::GetStyle().ItemSpacing.x);
+    float v = s.value;
+    if (ImGui::SliderFloat("##slider", &v, s.min, s.max, s.format, ImGuiSliderFlags_AlwaysClamp)) write(s, v);
+    ImGui::SameLine();
+    if (ImGui::Button("+", ImVec2(button, 0))) write(s, s.value + s.step);
+    if (s.note) {
+        ImGui::Indent(330.0f);
+        ImGui::TextDisabled("%s", s.note);
+        ImGui::Unindent(330.0f);
+    }
+    ImGui::PopID();
+}
+
+// A toggle: a wide button that reads On or Off, green while on. The note (about 50 characters
+// at most, it shares the line with the button) goes after the label.
+void toggle(BoolSetting& s) {
+    ImGui::PushID(s.key);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(s.label);
+    if (s.note && s.warning) {
+        // Two lines in the row's height: the note on top, the amber warning right under it.
+        const ImVec2 row = ImGui::GetCursorPos();
+        const float top = row.y - ImGui::GetStyle().ItemSpacing.y - ImGui::GetFrameHeight();
+        ImGui::SetCursorPos(ImVec2(330.0f, top - 1.0f));
+        ImGui::TextDisabled("%s", s.note);
+        ImGui::SetCursorPos(ImVec2(330.0f, top + ImGui::GetTextLineHeight() - 1.0f));
+        ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.25f, 1.0f), "%s", s.warning);
+        ImGui::SetCursorPos(ImVec2(ImGui::GetContentRegionMax().x - 160.0f, top));
+    } else {
+        if (s.note) {
+            ImGui::SameLine(330.0f);
+            ImGui::TextDisabled("%s", s.note);
+        }
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - 160.0f);
+    }
+    if (s.value) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.50f, 0.25f, 1.0f));
+    if (ImGui::Button(s.value ? "On" : "Off", ImVec2(160, 0))) {
+        if (s.value && s.confirm_off) {
+            ImGui::OpenPopup("confirm");
+        } else {
+            write(s, !s.value);
+        }
+    }
+    if (s.value) ImGui::PopStyleColor();
+    if (ImGui::BeginPopupModal("confirm", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        ImGui::TextUnformatted("Turn the settings panel off?");
+        ImGui::Dummy(ImVec2(0, 6));
+        ImGui::TextDisabled("This tab will be gone from the next SteamVR start. To bring it back,");
+        ImGui::TextDisabled("run \"leapfrog-panel.exe set panel true\" from the driver's bin\\win64 folder,");
+        ImGui::TextDisabled("or set \"panel\" to true under driver_leapfrog in steamvr.vrsettings.");
+        ImGui::Dummy(ImVec2(0, 10));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.80f, 0.50f, 0.12f, 1.0f));
+        if (ImGui::Button("Turn off", ImVec2(220, 0))) {
+            write(s, false);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        if (ImGui::Button("Keep", ImVec2(220, 0))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+}
+
+// The Defaults button at the bottom edge of the panel.
+void defaults_button(FloatSetting* settings, size_t count) {
+    ImGui::SetCursorPosY(ImGui::GetWindowHeight() - ImGui::GetStyle().WindowPadding.y - ImGui::GetFrameHeight());
+    if (ImGui::Button("Defaults", ImVec2(220, 0))) {
+        for (size_t i = 0; i < count; i++) write(settings[i], settings[i].def);
+    }
+}
+
+// Draws one frame of the panel: three tabs, placement, switching and driver.
 static void draw() {
     ImGui::SetNextWindowPos(ImVec2(0, 0));
     ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
     ImGui::Begin("LeapFrog", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings);
     ImGui::Text("LeapFrog %s", LFP_VERSION);
-    ImGui::Separator();
-    ImGui::TextWrapped("The settings follow in the next build. This tab only checks that the panel shows up and takes the pointer.");
-    ImGui::Dummy(ImVec2(0, 20));
-    if (ImGui::Button(g_clicked ? "Clicked, click again" : "Click me", ImVec2(360, 80))) {
-        g_clicked = !g_clicked;
+    if (ImGui::BeginTabBar("tabs")) {
+        if (ImGui::BeginTabItem("  Hand placement  ")) {
+            ImGui::Dummy(ImVec2(0, 10));
+            for (FloatSetting& s : g_placement) stepper(s);
+            defaults_button(g_placement, sizeof g_placement / sizeof g_placement[0]);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("  Switching  ")) {
+            ImGui::Dummy(ImVec2(0, 10));
+            toggle(g_pickup);
+            ImGui::Dummy(ImVec2(0, 10));
+            for (FloatSetting& s : g_switching) stepper(s);
+            defaults_button(g_switching, sizeof g_switching / sizeof g_switching[0]);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("  Driver  ")) {
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(16.0f, 8.0f));
+            for (BoolSetting& s : g_driver) toggle(s);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("Performance");
+            ImGui::SameLine(330.0f);
+            ImGui::TextDisabled("Ultraleap tracking performance mode");
+            ImGui::SameLine(ImGui::GetContentRegionMax().x - 3 * 130.0f - 2 * ImGui::GetStyle().ItemSpacing.x);
+            for (int i = 0; i < 3; i++) {
+                if (i) ImGui::SameLine();
+                bool on = g_performance == i;
+                if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.50f, 0.25f, 1.0f));
+                if (ImGui::Button(PERFORMANCE[i], ImVec2(130, 0)) && !on) {
+                    g_performance = i;
+                    lfp_set_string("trackingPerformance", PERFORMANCE[i]);
+                }
+                if (on) ImGui::PopStyleColor();
+            }
+            ImGui::PopStyleVar();
+            // The restart note at the bottom edge of the panel.
+            ImGui::SetCursorPosY(ImGui::GetWindowHeight() - ImGui::GetStyle().WindowPadding.y - ImGui::GetTextLineHeight());
+            ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.25f, 1.0f), "SteamVR will need to be restarted for these changes to take effect.");
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
     }
     ImGui::End();
 }
@@ -135,6 +356,7 @@ extern "C" int lfp_overlay_frame(void) {
                 break;
             case vr::VREvent_OverlayShown:
                 g_visible = true;
+                read_all(); // tune.txt or a terminal may have changed them meanwhile
                 break;
             case vr::VREvent_OverlayHidden:
                 g_visible = false;
