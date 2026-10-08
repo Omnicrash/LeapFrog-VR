@@ -1,0 +1,129 @@
+//! `leapfrog-panel`: the driver's settings, written live into SteamVR.
+//!
+//! `leapfrog-panel set <key> <value>` writes one setting (`get <key>` reads it back). The value's
+//! shape picks the type: `true`/`false`, an integer, a float, else a string. The driver reads
+//! most of its settings once a second, so a write shows up in its log within that.
+
+use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_int};
+
+mod ffi {
+    use super::*;
+    extern "C" {
+        pub fn lfp_connect(dll: *const u16, overlay: c_int, err: *mut c_char, err_len: usize) -> c_int;
+        pub fn lfp_disconnect();
+        pub fn lfp_set_float(key: *const c_char, value: f32) -> c_int;
+        pub fn lfp_set_bool(key: *const c_char, value: c_int) -> c_int;
+        pub fn lfp_set_int(key: *const c_char, value: c_int) -> c_int;
+        pub fn lfp_set_string(key: *const c_char, value: *const c_char) -> c_int;
+        pub fn lfp_get_float(key: *const c_char, value: *mut f32) -> c_int;
+        pub fn lfp_get_bool(key: *const c_char, value: *mut c_int) -> c_int;
+        pub fn lfp_get_int(key: *const c_char, value: *mut c_int) -> c_int;
+        pub fn lfp_get_string(key: *const c_char, value: *mut c_char, len: usize) -> c_int;
+        pub fn lfp_error_name(code: c_int) -> *const c_char;
+    }
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let code = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        ["set", key, value] => run(|| set(key, value)),
+        ["get", key] => run(|| get(key)),
+        _ => {
+            eprintln!("usage: leapfrog-panel set <key> <value> | get <key>");
+            2
+        }
+    };
+    std::process::exit(code);
+}
+
+fn run(f: impl FnOnce() -> Result<(), String>) -> i32 {
+    match connect().and_then(|()| {
+        let r = f();
+        // SAFETY: connected above.
+        unsafe { ffi::lfp_disconnect() };
+        r
+    }) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
+/// VR_Init as a background app through the runtime SteamVR registered in openvrpaths.vrpath.
+fn connect() -> Result<(), String> {
+    let dll = runtime_dir()?.join("bin").join("win64").join("openvr_api.dll");
+    let wide: Vec<u16> = dll.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
+    let mut err = vec![0 as c_char; 256];
+    // SAFETY: NUL-terminated path, error buffer of the given length.
+    if unsafe { ffi::lfp_connect(wide.as_ptr(), 0, err.as_mut_ptr(), err.len()) } != 0 {
+        // SAFETY: the shim wrote a NUL-terminated string.
+        let text = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy();
+        return Err(format!("SteamVR: {text}"));
+    }
+    Ok(())
+}
+
+/// The first `runtime` entry of %LOCALAPPDATA%\openvr\openvrpaths.vrpath.
+fn runtime_dir() -> Result<std::path::PathBuf, String> {
+    let local = std::env::var("LOCALAPPDATA").map_err(|_| "LOCALAPPDATA not set")?;
+    let path = std::path::Path::new(&local).join("openvr").join("openvrpaths.vrpath");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let after = text.split("\"runtime\"").nth(1).ok_or("openvrpaths.vrpath: no runtime entry")?;
+    let start = after.find('[').and_then(|i| after[i..].find('"').map(|j| i + j + 1)).ok_or("openvrpaths.vrpath: runtime list unreadable")?;
+    let end = after[start..].find('"').ok_or("openvrpaths.vrpath: runtime path unterminated")?;
+    Ok(std::path::PathBuf::from(after[start..start + end].replace("\\\\", "\\").replace("\\/", "/")))
+}
+
+fn check(code: c_int) -> Result<(), String> {
+    if code == 0 {
+        return Ok(());
+    }
+    // SAFETY: the shim returns a static string.
+    let name = unsafe { CStr::from_ptr(ffi::lfp_error_name(code)) }.to_string_lossy();
+    Err(format!("settings error {code} ({name})"))
+}
+
+fn set(key: &str, value: &str) -> Result<(), String> {
+    let k = CString::new(key).map_err(|_| "bad key")?;
+    // SAFETY: NUL-terminated key and value.
+    let code = unsafe {
+        if value == "true" || value == "false" {
+            ffi::lfp_set_bool(k.as_ptr(), (value == "true") as c_int)
+        } else if let Ok(i) = value.parse::<i32>() {
+            ffi::lfp_set_int(k.as_ptr(), i)
+        } else if let Ok(f) = value.parse::<f32>() {
+            ffi::lfp_set_float(k.as_ptr(), f)
+        } else {
+            let v = CString::new(value).map_err(|_| "bad value")?;
+            ffi::lfp_set_string(k.as_ptr(), v.as_ptr())
+        }
+    };
+    check(code)?;
+    println!("{key} = {value}");
+    Ok(())
+}
+
+/// Tries each type in turn; the store knows which one the key holds.
+fn get(key: &str) -> Result<(), String> {
+    let k = CString::new(key).map_err(|_| "bad key")?;
+    let mut f = 0f32;
+    let mut i = 0 as c_int;
+    let mut s = vec![0 as c_char; 256];
+    // SAFETY: NUL-terminated key, out-parameters of the right size.
+    unsafe {
+        if ffi::lfp_get_float(k.as_ptr(), &mut f) == 0 {
+            println!("{key} = {f}");
+        } else if ffi::lfp_get_int(k.as_ptr(), &mut i) == 0 {
+            println!("{key} = {i}");
+        } else if ffi::lfp_get_bool(k.as_ptr(), &mut i) == 0 {
+            println!("{key} = {}", i != 0);
+        } else {
+            check(ffi::lfp_get_string(k.as_ptr(), s.as_mut_ptr(), s.len()))?;
+            println!("{key} = {}", CStr::from_ptr(s.as_ptr()).to_string_lossy());
+        }
+    }
+    Ok(())
+}

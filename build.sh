@@ -25,6 +25,7 @@ cp driver.vrdrivermanifest "$out/"
 cp -r resources "$out/resources"
 cp target/x86_64-pc-windows-msvc/release/driver_leapfrog.dll "$out/bin/win64/"
 cp target/x86_64-pc-windows-msvc/release/leapfrog-watchdog.exe "$out/bin/win64/"
+cp target/x86_64-pc-windows-msvc/release/leapfrog-panel.exe "$out/bin/win64/"
 cp target/x86_64-pc-windows-msvc/release/leapfrog-setup.exe "$out/"
 version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 echo "$version" > "$out/VERSION"

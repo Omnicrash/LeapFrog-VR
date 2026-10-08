@@ -1,0 +1,10 @@
+[package]
+name = "leapfrog-panel"
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+description = "LeapFrog settings panel: a SteamVR dashboard overlay writing the driver's settings live"
+publish = false
+
+[build-dependencies]
+cc = "1"
