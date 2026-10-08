@@ -279,7 +279,6 @@ impl State {
                         controller_velocity: if fresh { Vec3::new(r.speed, 0.0, 0.0) } else { Vec3::ZERO },
                         controller_angular_velocity: if fresh { Vec3::new(r.angular_speed, 0.0, 0.0) } else { Vec3::ZERO },
                         hand_position,
-                        hand_rotation: hand.world_pose().map(|(r, _)| r),
                     }
                 }
                 None => Observation {
@@ -296,7 +295,6 @@ impl State {
                     controller_velocity: controller.map(|c| Vec3::from(c.velocity)).unwrap_or(Vec3::ZERO),
                     controller_angular_velocity: controller.map(|c| Vec3::from(c.angular_velocity)).unwrap_or(Vec3::ZERO),
                     hand_position,
-                    hand_rotation: hand.world_pose().map(|(r, _)| r),
                 },
             };
             // Self-check of the real-pose composition, once a second while the controller drives:
