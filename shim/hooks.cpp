@@ -200,8 +200,8 @@ void on_interface(void* object, const char* name)
     }
     bool host = std::strncmp(name, "IVRServerDriverHost_", 20) == 0;
     bool input = std::strncmp(name, "IVRDriverInput_", 15) == 0;
-    if (first_sight(name)) {
-        logf("%s requested%s", name, (host && !known_host(name)) || (input && !known_input(name)) ? " (unknown version, not hooked)" : "");
+    if (first_sight(name) && ((host && !known_host(name)) || (input && !known_input(name)))) {
+        logf("%s requested: unknown version, not hooked", name);
     }
     if (host && known_host(name)) {
         hook_host(object, name);

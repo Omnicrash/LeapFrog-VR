@@ -70,8 +70,6 @@ pub struct Switch {
     thresholds: Thresholds,
     /// Which rule set the current state, for the log.
     reason: &'static str,
-    /// Hand distance to the grip reference in the last update, when both were known.
-    last_distance: Option<f32>,
 }
 
 /// Samples before the learned grip point is trusted over the prior.
@@ -92,7 +90,7 @@ const DEAD_TURN_RPS: f32 = 0.3;
 
 impl Switch {
     pub fn new(thresholds: Thresholds) -> Switch {
-        Switch { state: Driver::Controller, away_since: None, dark_since: None, controller_known: false, locked_until: 0.0, grip: GRIP_PRIOR, grip_samples: 0, thresholds, reason: "start", last_distance: None }
+        Switch { state: Driver::Controller, away_since: None, dark_since: None, controller_known: false, locked_until: 0.0, grip: GRIP_PRIOR, grip_samples: 0, thresholds, reason: "start" }
     }
 
     /// The learned grip point (wrist in the controller frame) once trusted; before that the
@@ -108,11 +106,6 @@ impl Switch {
     /// Why the state is what it is (the rule that set it last).
     pub fn reason(&self) -> &'static str {
         self.reason
-    }
-
-    /// Hand distance to the grip reference in the last update, when both were known.
-    pub fn last_distance(&self) -> Option<f32> {
-        self.last_distance
     }
 
     fn switch(&mut self, state: Driver, now_s: f64, reason: &'static str) {
@@ -132,7 +125,6 @@ impl Switch {
             self.controller_known = o.controller_known;
             self.state = Driver::Leap;
             self.reason = "controller off";
-            self.last_distance = None;
             return self.state;
         }
         if (o.controller_known && !self.controller_known) || o.force_controller {
@@ -158,7 +150,6 @@ impl Switch {
         // moves or is near the hand; no pick-up from the gyro, which oscillated on the FBT night.
         let Some(controller) = o.controller_position else {
             self.away_since = None;
-            self.last_distance = None;
             let resting = self.state == Driver::Controller && may_switch && t.dead_s > 0.0
                 && o.hand_position.is_some() && o.controller_angular_velocity.length() < DEAD_TURN_RPS;
             if !resting {
@@ -188,7 +179,6 @@ impl Switch {
             }
             hand.distance(controller + o.controller_rotation * self.grip)
         });
-        self.last_distance = distance;
         match self.state {
             Driver::Leap => {
                 if may_switch && speed > t.pickup_mps {

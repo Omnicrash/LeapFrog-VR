@@ -1,9 +1,8 @@
 //! The Rust side of the LF-6 passthrough hooks (`shim/hooks.cpp`, doc/Passthrough.md).
 //!
 //! These run on other drivers' threads, in the middle of their host calls, so they keep their own
-//! small mutex and never touch [`crate::STATE`]: the frame loop will write what they need here,
-//! they only read. This scaffold passes everything through and logs each device, skeleton and
-//! interface the first time it is seen.
+//! small mutex and never touch [`crate::STATE`]: the frame loop writes what they need here, they
+//! only read.
 
 use std::sync::Mutex;
 
@@ -28,15 +27,9 @@ pub struct Injection {
 static HOOKS: Mutex<Hooks> = Mutex::new(Hooks::new());
 
 struct Hooks {
-    /// Object ids whose pose has come through, with their first connected/valid flags.
-    pose_devices: Vec<u32>,
-    poses: u64,
     /// Skeleton components created by other drivers: (handle, container).
     skeletons: Vec<(u64, u64)>,
-    /// Skeleton handles whose bones have come through.
-    update_handles: Vec<u64>,
-    updates: u64,
-    /// Per hand: the controller's property container (to find its skeleton) and what to inject.
+    /// Per hand: the controller's property container (to find its skeleton) and device id.
     containers: [Option<u64>; 2],
     object_ids: [Option<u32>; 2],
     /// Each controller's world-from-driver transform, from the last pose lighthouse sent.
@@ -44,9 +37,6 @@ struct Hooks {
     /// Each controller's last pose as lighthouse sent it, before any rewrite (the real one).
     real: [Option<RealPose>; 2],
     injections: [Option<Injection>; 2],
-    injected_poses: u64,
-    /// Bone updates seen per hand since the last `take_bone_updates`.
-    bone_updates: [u32; 2],
 }
 
 /// A controller's pose as its own driver sent it, composed into world space the way vrserver
@@ -65,20 +55,7 @@ pub struct RealPose {
 
 impl Hooks {
     const fn new() -> Hooks {
-        Hooks {
-            pose_devices: Vec::new(),
-            poses: 0,
-            skeletons: Vec::new(),
-            update_handles: Vec::new(),
-            updates: 0,
-            containers: [None, None],
-            object_ids: [None, None],
-            frames: [None, None],
-            real: [None, None],
-            injections: [None, None],
-            injected_poses: 0,
-            bone_updates: [0, 0],
-        }
+        Hooks { skeletons: Vec::new(), containers: [None, None], object_ids: [None, None], frames: [None, None], real: [None, None], injections: [None, None] }
     }
 }
 
@@ -131,16 +108,6 @@ pub fn set_injection(hand: usize, injection: Option<Injection>) {
     with_hooks(|h| h.injections[hand] = injection);
 }
 
-/// Bone updates the controller's own driver sent for this hand since the last call.
-pub fn take_bone_updates(hand: usize) -> u32 {
-    with_hooks(|h| std::mem::take(&mut h.bone_updates[hand])).unwrap_or(0)
-}
-
-/// How many controller poses have been replaced so far (for the log).
-pub fn injected_poses() -> u64 {
-    with_hooks(|h| h.injected_poses).unwrap_or(0)
-}
-
 fn with_hooks<T>(f: impl FnOnce(&mut Hooks) -> T) -> Option<T> {
     HOOKS.lock().ok().map(|mut h| f(&mut h))
 }
@@ -166,15 +133,8 @@ pub unsafe extern "C" fn lf_hook_pose(object_id: u32, pose: *mut DriverPose) {
         // SAFETY: the caller's contract above.
         let p = unsafe { &mut *pose };
         with_hooks(|h| {
-            h.poses += 1;
             let frame = (quat_f32(p.world_from_driver_rotation), vec_f32(p.world_from_driver_translation));
             let dfh = (quat_f32(p.driver_from_head_rotation), vec_f32(p.driver_from_head_translation));
-            if !h.pose_devices.contains(&object_id) {
-                h.pose_devices.push(object_id);
-                log!("device {object_id}: first pose through the hook (connected {}, valid {}, result {}; driver-from-head {:.1} cm, {:.0} deg; world-from-driver {:.2} {:.2} {:.2}, {:.0} deg)",
-                    p.device_is_connected, p.pose_is_valid, p.result, dfh.1.length() * 100.0, dfh.0.angle_between(Quat::IDENTITY).to_degrees(),
-                    frame.1.x, frame.1.y, frame.1.z, frame.0.angle_between(Quat::IDENTITY).to_degrees());
-            }
             if let Some(hand) = h.object_ids.iter().position(|id| *id == Some(object_id)) {
                 h.frames[hand] = Some(frame);
                 let rotation = quat_f32(p.rotation);
@@ -191,7 +151,6 @@ pub unsafe extern "C" fn lf_hook_pose(object_id: u32, pose: *mut DriverPose) {
                 });
                 if let Some(inj) = h.injections[hand] {
                     write_pose(p, &inj, frame);
-                    h.injected_poses += 1;
                 }
             }
         });
@@ -205,12 +164,10 @@ pub unsafe extern "C" fn lf_hook_pose(object_id: u32, pose: *mut DriverPose) {
 #[no_mangle]
 pub unsafe extern "C" fn lf_hook_skeleton_create(container: u64, name: *const std::os::raw::c_char, skeleton_path: *const std::os::raw::c_char, tracking_level: i32) -> i32 {
     guard("hook_skeleton_create", tracking_level, || {
-        // Experiment 1 (doc/Passthrough.md): register other drivers' skeletons as Full and see
-        // whether VRChat then treats the Index controllers as hand-tracking devices.
-        let full = crate::host::setting_bool("indexSkeletonFull", true);
-        let level = if full { crate::host::SKELETAL_TRACKING_FULL } else { tracking_level };
-        log!("skeleton {} ({}) on container {container}: level {tracking_level} requested, {level} registered", c_str(name), c_str(skeleton_path));
-        level
+        // Other drivers' skeletons register as Full: that is what makes VRChat treat the Index
+        // controllers as hand tracking (doc/Passthrough.md, step 2).
+        log!("skeleton {} ({}) on container {container}: level {tracking_level} requested, Full registered", c_str(name), c_str(skeleton_path));
+        crate::host::SKELETAL_TRACKING_FULL
     })
 }
 
@@ -226,22 +183,14 @@ pub extern "C" fn lf_hook_skeleton_created(container: u64, handle: u64) {
 /// # Safety
 /// `bones` points at `count` VRBoneTransform_t the shim owns for the duration of the call.
 #[no_mangle]
-pub unsafe extern "C" fn lf_hook_skeleton_update(handle: u64, motion_range: i32, bones: *mut BoneTransform, count: u32) {
+pub unsafe extern "C" fn lf_hook_skeleton_update(handle: u64, _motion_range: i32, bones: *mut BoneTransform, count: u32) {
     guard("hook_skeleton_update", (), || {
         if bones.is_null() || count == 0 {
             return;
         }
         with_hooks(|h| {
-            h.updates += 1;
             let container = h.skeletons.iter().find(|s| s.0 == handle).map(|s| s.1);
-            if !h.update_handles.contains(&handle) {
-                h.update_handles.push(handle);
-                log!("skeleton handle {handle} (container {container:?}): first bones through the hook, range {motion_range}, {count} bones");
-            }
             let hand = container.and_then(|c| h.containers.iter().position(|hc| *hc == Some(c)));
-            if let Some(hand) = hand {
-                h.bone_updates[hand] = h.bone_updates[hand].saturating_add(1);
-            }
             if let Some(hand) = hand.filter(|_| count as usize == BONE_COUNT) {
                 // SAFETY: `count` bones per the caller's contract.
                 let out = unsafe { std::slice::from_raw_parts_mut(bones, count as usize) };

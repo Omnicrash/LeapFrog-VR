@@ -33,10 +33,11 @@ static STATE: Mutex<Option<State>> = Mutex::new(None);
 /// A sample older than this is a hand the Leap no longer sees.
 const STALE_US: i64 = 300_000;
 
-/// SteamVR counts binding loads per app process for its whole session and stops reloading
-/// around 250 (doc/Background.md, "The FBT night"). Every hand transition costs VRChat about two
-/// loads and the compositor one per two transitions, so warn from here on, every 25.
-const TRANSITION_WARNING: u32 = 100;
+/// SteamVR counts binding loads per app process for its whole run and VRChat refuses them from
+/// 100 (doc/Background.md, "The binding budget, client side"); a device transition costs about
+/// one. With the passthrough on, transitions only happen on controller power, so this rarely
+/// matters; warn from here on, every 25.
+const TRANSITION_WARNING: u32 = 60;
 
 struct State {
     hands: [Hand; 2],
@@ -50,15 +51,10 @@ struct State {
     room_setup: bool,
     /// LF-6: the controllers stay the hand devices and get the Leap's data while put down.
     passthrough: bool,
-    /// DEBUG: the Leap device connects as well while it drives, next to the injected
-    /// controller, so the two can be compared in SteamVR Home and in the log.
-    passthrough_both: bool,
     /// Per hand: whether the Leap drives the controller right now, and which controller.
     leap_drives: [bool; 2],
     controller_ids: [Option<u32>; 2],
-    /// DEBUG: with a controller on, flip the data source between the controller's own and the
-    /// Leap's every this many seconds (0 = off), to compare the two placements by eye.
-    debug_alternate_s: f32,
+    grip_logged: [bool; 2],
 
 
     frame: u32,
@@ -123,9 +119,13 @@ fn read_thresholds() -> Thresholds {
 }
 
 /// Live overrides from `tune.txt` next to the driver DLL (`key=value` per line, the setting
-/// names), read once a second: SteamVR does not reload steamvr.vrsettings while it runs, so
-/// tuning by eye goes through this file (tools: D:\\tmp\\leapfrog\\offsettune.ps1). Absent = no overrides.
+/// names), read once a second while `tuneFile` is on: SteamVR does not reload
+/// steamvr.vrsettings while it runs, so tuning by eye goes through this file
+/// (`tools/offsettune.ps1` writes it). Off or absent = no overrides.
 fn tune_overrides() -> Vec<(String, f32)> {
+    if !host::setting_bool("tuneFile", false) {
+        return Vec::new();
+    }
     let Some(dir) = service::own_directory() else { return Vec::new() };
     let Ok(text) = std::fs::read_to_string(dir.join("tune.txt")) else { return Vec::new() };
     text.lines()
@@ -187,19 +187,15 @@ pub extern "C" fn lf_init() -> i32 {
             pickup_enabled: host::setting_bool("pickupSwitching", true),
             room_setup: false,
             passthrough: host::setting_bool("passthrough", false),
-            passthrough_both: host::setting_bool("passthroughBoth", false),
             leap_drives: [false, false],
             controller_ids: [None, None],
-            debug_alternate_s: host::setting_float("debugAlternate", 0.0),
+            grip_logged: [false, false],
             frame: 0,
             transitions: 0,
             debug_panic_pending: host::setting_bool("debugPanic", false),
         };
         *STATE.lock().unwrap() = Some(state);
         log!("init: version {}, two hands registered, offsets {:?}, switching {:?}", env!("CARGO_PKG_VERSION"), offsets, thresholds);
-        if host::setting_float("debugAlternate", 0.0) > 0.0 {
-            log!("debugAlternate every {} s from the start", host::setting_float("debugAlternate", 0.0));
-        }
         host::INIT_ERROR_NONE
     })
 }
@@ -269,11 +265,6 @@ impl State {
                 self.offsets = offsets;
                 log!("offsets changed: {offsets:?}");
             }
-            let alternate = tuned_float(&tune_overrides(), "debugAlternate", 0.0);
-            if alternate != self.debug_alternate_s {
-                self.debug_alternate_s = alternate;
-                log!("debugAlternate {}", if alternate > 0.0 { format!("every {alternate} s") } else { "off".to_string() });
-            }
             let room_setup = service::process_running("steamvr_room_setup.exe");
             if room_setup != self.room_setup {
                 self.room_setup = room_setup;
@@ -328,18 +319,17 @@ impl State {
                 self.controller_ids[i] = controller_id;
                 hooks::set_controller(i, controller_id, controller_id.map(|id| host::Properties::of(id).container()));
             }
-            if self.frame % 900 == 0 {
-                let grip = self.switches[i].grip();
-                log!("{} grip point: {}{}",
-                    hand.side(), grip.map(|g| format!("{:.3} {:.3} {:.3} m", g.x, g.y, g.z)).unwrap_or_else(|| "prior".to_string()),
-                    if self.passthrough { format!(", {} poses injected, {} bone updates by the controller's driver in the last 10 s", hooks::injected_poses(), hooks::take_bone_updates(i)) } else { String::new() });
+            if !self.grip_logged[i] {
+                if let Some(grip) = self.switches[i].grip() {
+                    self.grip_logged[i] = true;
+                    log!("{} grip point learned (wrist in the controller frame): {:.3} {:.3} {:.3} m", hand.side(), grip.x, grip.y, grip.z);
+                }
             }
             // Passthrough (LF-6): with its controller on, the controller stays the hand device
             // and gets the Leap's pose and fingers while the Leap drives; the Leap device only
             // connects for a controller that is off.
             let composite = self.passthrough && observation.controller_on;
-            let alternating = composite && self.debug_alternate_s > 0.0;
-            let leap_drives = composite && if alternating { (now_s / self.debug_alternate_s as f64) as i64 % 2 == 1 } else { driver == Driver::Leap };
+            let leap_drives = composite && driver == Driver::Leap;
             if composite {
                 // While held, the controller's own data passes untouched: an injected pose while
                 // held turns the dashboard model and the pointer with the hand, and the Leap's
@@ -363,48 +353,19 @@ impl State {
                     if !host::pose_updated_as(inj.object_id, &pose) && self.frame % 90 == 0 {
                         log!("{} hand: no host object known for controller {} yet, own pose not sent", hand.side(), inj.object_id);
                     }
-                    // Self-check, once a second: what SteamVR reports for the controller (this
-                    // frame's raw pose) against what was injected last frame. Faithful = a few
-                    // mm and degrees; anything else is our math or frame.
-                    if self.frame % 90 == 45 {
-                        if let Some(raw) = controller {
-                            let reported = math::Head::from_pose(raw);
-                            let d_pos = (reported.translation - inj.position).length() * 100.0;
-                            let d_rot = reported.rotation.angle_between(inj.rotation).to_degrees();
-                            log!("{} injection check: SteamVR reports the controller {d_pos:.1} cm and {d_rot:.0} deg from the injected pose (injected {:.2} {:.2} {:.2}, reported {:.2} {:.2} {:.2}, raw result {} valid {})",
-                                hand.side(), inj.position.x, inj.position.y, inj.position.z, reported.translation.x, reported.translation.y, reported.translation.z, raw.tracking_result, raw.pose_is_valid);
-                            // DEBUG: with the Leap device connected too, device against device.
-                            if let Some(leap_raw) = hand.object_id.and_then(|id| self.poses.get(id as usize)).filter(|p| p.pose_is_valid) {
-                                let leap = math::Head::from_pose(leap_raw);
-                                log!("{} device check: SteamVR reports the Leap device {:.1} cm and {:.0} deg from the controller",
-                                    hand.side(), (leap.translation - reported.translation).length() * 100.0, leap.rotation.angle_between(reported.rotation).to_degrees());
-                            }
-                        }
-                    }
                 }
             } else {
                 hooks::set_injection(i, None);
             }
-            let changed = leap_drives != self.leap_drives[i];
-            self.leap_drives[i] = leap_drives;
-            if changed && !alternating {
-                log!("{} hand: {} drives the controller", hand.side(), if leap_drives { "the Leap" } else { "the controller" });
-                let (result, valid, on) = controller.map(|c| (c.tracking_result, c.pose_is_valid, c.device_is_connected)).unwrap_or((0, false, false));
-                log!("  because: {}; controller result {result} valid {valid} on {on}, speed {:.2} m/s, turn {:.2} rad/s; hand {}, distance {}",
-                    self.switches[i].reason(), observation.controller_velocity.length(), observation.controller_angular_velocity.length(),
-                    if hand_position.is_some() { "seen" } else { "not seen" },
-                    self.switches[i].last_distance().map(|d| format!("{d:.2} m")).unwrap_or_else(|| "n/a".to_string()));
+            if leap_drives != self.leap_drives[i] {
+                self.leap_drives[i] = leap_drives;
+                log!("{} hand: {} drives the controller ({})", hand.side(), if leap_drives { "the Leap" } else { "the controller" }, self.switches[i].reason());
             }
-            if hand.apply(driver == Driver::Leap && (!composite || self.passthrough_both)) {
+            if hand.apply(driver == Driver::Leap && !composite) {
                 self.transitions += 1;
-                // The inputs behind the decision, for reading a wrong one off the log.
-                let (result, valid, on) = controller.map(|c| (c.tracking_result, c.pose_is_valid, c.device_is_connected)).unwrap_or((0, false, false));
-                log!("  because: {}; controller result {result} valid {valid} on {on}, speed {:.2} m/s, turn {:.2} rad/s; hand {}, distance {}",
-                    self.switches[i].reason(), observation.controller_velocity.length(), observation.controller_angular_velocity.length(),
-                    if hand_position.is_some() { "seen" } else { "not seen" },
-                    self.switches[i].last_distance().map(|d| format!("{d:.2} m")).unwrap_or_else(|| "n/a".to_string()));
+                log!("{} hand {} ({})", hand.side(), if driver == Driver::Leap { "takes over" } else { "steps back" }, self.switches[i].reason());
                 if self.transitions >= TRANSITION_WARNING && (self.transitions - TRANSITION_WARNING) % 25 == 0 {
-                    log!("{} hand transitions this session: SteamVR stops rebinding apps after about 125 (VRChat) and 400 (dashboard); restart VRChat or SteamVR when convenient", self.transitions);
+                    log!("{} device transitions this session: VRChat refuses binding loads from 100 per run (about one per transition); restart VRChat when convenient", self.transitions);
                 }
             }
             hand.publish();

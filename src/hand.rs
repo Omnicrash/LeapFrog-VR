@@ -67,25 +67,10 @@ impl Hand {
             .set_bool(prop::DEVICE_PROVIDES_BATTERY_STATUS, false)
             .set_bool(prop::IDENTIFIABLE, false)
             .set_string(prop::RESOURCE_ROOT, "leapfrog");
-        // Which controller type the hand reports. vd_hand_controller (Virtual Desktop's hands):
-        // pose + skeleton only, VRChat ships a binding for it. knuckles (the Index controller's
-        // own type, Leapify's choice): an experiment, 2026-10-07. SteamVR makes every app reload
-        // its bindings when a hand role changes device, and counts those loads per app for the
-        // whole session (about 250, then no more reloads: VRChat's hands go limp). If a swap
-        // between two devices of the same type does not count, switching becomes free.
-        match host::setting_string("controllerType", "vd_hand_controller").as_str() {
-            "knuckles" => {
-                props
-                    .set_string(prop::CONTROLLER_TYPE, "knuckles")
-                    .set_string(prop::INPUT_PROFILE_PATH, "{indexcontroller}/input/index_controller_profile.json");
-                log!("{} hand reports as knuckles (controllerType experiment)", self.side());
-            }
-            _ => {
-                props
-                    .set_string(prop::CONTROLLER_TYPE, "vd_hand_controller")
-                    .set_string(prop::INPUT_PROFILE_PATH, "{leapfrog}/input/leapfrog_hand_profile.json");
-            }
-        }
+        // Virtual Desktop's hand type: pose + skeleton only, VRChat ships a binding for it.
+        props
+            .set_string(prop::CONTROLLER_TYPE, "vd_hand_controller")
+            .set_string(prop::INPUT_PROFILE_PATH, "{leapfrog}/input/leapfrog_hand_profile.json");
 
         // Render model (handmodel/: the status icon's outline in 3D) and Leapify's status icons (MIT).
         let side = self.side();
@@ -165,7 +150,6 @@ impl Hand {
         let transition = connected != self.was_connected;
         if transition {
             self.was_connected = connected;
-            log!("{} hand {}", self.side(), if connected { "takes over" } else { "steps back" });
         }
         if !connected {
             self.pose = DriverPose::disconnected();

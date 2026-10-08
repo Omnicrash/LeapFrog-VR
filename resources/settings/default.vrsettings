@@ -2,7 +2,6 @@
   "driver_leapfrog": {
     "enable": true,
     "debugPanic": false,
-    "controllerType": "vd_hand_controller",
     "manageService": true,
     "trackingPerformance": "ultra",
     "handOnObject": true,
@@ -15,9 +14,7 @@
     "rotationOffsetZ": 0.0,
     "handInwardOffset": 0.01,
     "passthrough": true,
-    "indexSkeletonFull": true,
-    "passthroughBoth": false,
-    "debugAlternate": 0.0,
+    "tuneFile": false,
     "pickupSwitching": true,
     "awayDistance": 0.20,
     "nearDistance": 0.15,
