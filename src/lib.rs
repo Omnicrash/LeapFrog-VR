@@ -48,6 +48,11 @@ struct State {
     offsets: Offsets,
     pickup_enabled: bool,
     room_setup: bool,
+    /// LF-6: the controllers stay the hand devices and get the Leap's data while put down.
+    passthrough: bool,
+    /// Per hand: whether the Leap drives the controller right now, and which controller.
+    leap_drives: [bool; 2],
+    controller_ids: [Option<u32>; 2],
     frame: u32,
     transitions: u32,
     debug_panic_pending: bool,
@@ -153,6 +158,9 @@ pub extern "C" fn lf_init() -> i32 {
             offsets,
             pickup_enabled: host::setting_bool("pickupSwitching", true),
             room_setup: false,
+            passthrough: host::setting_bool("passthrough", false),
+            leap_drives: [false, false],
+            controller_ids: [None, None],
             frame: 0,
             transitions: 0,
             debug_panic_pending: host::setting_bool("debugPanic", false),
@@ -253,14 +261,52 @@ impl State {
                 controller_velocity: controller.map(|c| Vec3::from(c.velocity)).unwrap_or(Vec3::ZERO),
                 controller_angular_velocity: controller.map(|c| Vec3::from(c.angular_velocity)).unwrap_or(Vec3::ZERO),
                 hand_position,
+                hand_rotation: hand.world_pose().map(|(r, _)| r),
             };
             let driver = self.switches[i].update(now_s, &observation);
+            let controller_id = self.controllers.index(i as u32);
+            if controller_id != self.controller_ids[i] {
+                self.controller_ids[i] = controller_id;
+                hooks::set_container(i, controller_id.map(|id| host::Properties::of(id).container()));
+            }
             if self.frame % 900 == 0 {
                 if let Some(grip) = self.switches[i].grip() {
-                    log!("{} grip point (wrist in the controller frame): {:.3} {:.3} {:.3} m", hand.side(), grip.x, grip.y, grip.z);
+                    let (y, x, z) = self.switches[i].grip_rotation().to_euler(glam::EulerRot::YXZ);
+                    log!("{} grip point (wrist in the controller frame): {:.3} {:.3} {:.3} m, hand rotation yaw {:.0} pitch {:.0} roll {:.0} deg{}",
+                        hand.side(), grip.x, grip.y, grip.z, y.to_degrees(), x.to_degrees(), z.to_degrees(),
+                        if self.passthrough { format!(", {} poses injected", hooks::injected_poses()) } else { String::new() });
                 }
             }
-            if hand.apply(driver == Driver::Leap) {
+            // Passthrough (LF-6): with its controller on, the controller stays the hand device
+            // and gets the Leap's pose and fingers while the Leap drives; the Leap device only
+            // connects for a controller that is off.
+            let composite = self.passthrough && observation.controller_on;
+            let leap_drives = composite && driver == Driver::Leap;
+            if composite {
+                let switch = &self.switches[i];
+                let injection = if leap_drives {
+                    controller_id.zip(hand.world_pose()).map(|(object_id, (hand_rotation, wrist))| {
+                        // Where the controller would be, held with the hand where the Leap sees it.
+                        let rotation = (hand_rotation * switch.grip_rotation().inverse()).normalize();
+                        hooks::Injection { object_id, rotation, position: wrist - rotation * switch.grip_vector(), bones: *hand.bones() }
+                    })
+                } else {
+                    None
+                };
+                hooks::set_injection(i, injection);
+            } else {
+                hooks::set_injection(i, None);
+            }
+            if leap_drives != self.leap_drives[i] {
+                self.leap_drives[i] = leap_drives;
+                log!("{} hand: {} drives the controller", hand.side(), if leap_drives { "the Leap" } else { "the controller" });
+                let (result, valid, on) = controller.map(|c| (c.tracking_result, c.pose_is_valid, c.device_is_connected)).unwrap_or((0, false, false));
+                log!("  because: {}; controller result {result} valid {valid} on {on}, speed {:.2} m/s, turn {:.2} rad/s; hand {}, distance {}",
+                    self.switches[i].reason(), observation.controller_velocity.length(), observation.controller_angular_velocity.length(),
+                    if hand_position.is_some() { "seen" } else { "not seen" },
+                    self.switches[i].last_distance().map(|d| format!("{d:.2} m")).unwrap_or_else(|| "n/a".to_string()));
+            }
+            if hand.apply(driver == Driver::Leap && !composite) {
                 self.transitions += 1;
                 // The inputs behind the decision, for reading a wrong one off the log.
                 let (result, valid, on) = controller.map(|c| (c.tracking_result, c.pose_is_valid, c.device_is_connected)).unwrap_or((0, false, false));

@@ -30,6 +30,11 @@ impl Controllers {
         index.and_then(|i| poses.get(i as usize)).is_some_and(|p| p.device_is_connected)
     }
 
+    /// This hand's controller's device index, once found.
+    pub fn index(&self, hand: u32) -> Option<u32> {
+        self.index[hand as usize]
+    }
+
     /// This hand's controller in this frame's raw poses, once found.
     pub fn pose<'a>(&self, hand: u32, poses: &'a [TrackedDevicePose]) -> Option<&'a TrackedDevicePose> {
         self.index[hand as usize].and_then(|i| poses.get(i as usize))

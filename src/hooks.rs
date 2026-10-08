@@ -7,9 +7,24 @@
 
 use std::sync::Mutex;
 
+use glam::{Quat, Vec3};
+
 use crate::guard;
-use crate::host::{BoneTransform, DriverPose};
+use crate::host::{self, BoneTransform, DriverPose};
 use crate::log::log;
+use crate::math::BONE_COUNT;
+
+/// What the frame loop wants written into a controller while the Leap drives its hand: the
+/// pose the controller would have if held with the hand where the Leap sees it (world space),
+/// and the Leap's bones. Fingers only (bones 2..): the controller's own root and wrist bones
+/// carry its origin-to-wrist offset, which the fingers hang from.
+#[derive(Clone, Copy)]
+pub struct Injection {
+    pub object_id: u32,
+    pub rotation: Quat,
+    pub position: Vec3,
+    pub bones: [BoneTransform; BONE_COUNT],
+}
 
 static HOOKS: Mutex<Hooks> = Mutex::new(Hooks::new());
 
@@ -22,12 +37,40 @@ struct Hooks {
     /// Skeleton handles whose bones have come through.
     update_handles: Vec<u64>,
     updates: u64,
+    /// Per hand: the controller's property container (to find its skeleton) and what to inject.
+    containers: [Option<u64>; 2],
+    injections: [Option<Injection>; 2],
+    injected_poses: u64,
 }
 
 impl Hooks {
     const fn new() -> Hooks {
-        Hooks { pose_devices: Vec::new(), poses: 0, skeletons: Vec::new(), update_handles: Vec::new(), updates: 0 }
+        Hooks {
+            pose_devices: Vec::new(),
+            poses: 0,
+            skeletons: Vec::new(),
+            update_handles: Vec::new(),
+            updates: 0,
+            containers: [None, None],
+            injections: [None, None],
+            injected_poses: 0,
+        }
     }
+}
+
+/// The frame loop names a hand's controller by its property container, once known.
+pub fn set_container(hand: usize, container: Option<u64>) {
+    with_hooks(|h| h.containers[hand] = container);
+}
+
+/// The frame loop sets (or clears) what the hooks write into a hand's controller.
+pub fn set_injection(hand: usize, injection: Option<Injection>) {
+    with_hooks(|h| h.injections[hand] = injection);
+}
+
+/// How many controller poses have been replaced so far (for the log).
+pub fn injected_poses() -> u64 {
+    with_hooks(|h| h.injected_poses).unwrap_or(0)
 }
 
 fn with_hooks<T>(f: impl FnOnce(&mut Hooks) -> T) -> Option<T> {
@@ -59,6 +102,23 @@ pub unsafe extern "C" fn lf_hook_pose(object_id: u32, pose: *mut DriverPose) {
             if !h.pose_devices.contains(&object_id) {
                 h.pose_devices.push(object_id);
                 log!("device {object_id}: first pose through the hook (connected {}, valid {}, result {})", p.device_is_connected, p.pose_is_valid, p.result);
+            }
+            if let Some(inj) = h.injections.iter().flatten().find(|inj| inj.object_id == object_id) {
+                // The injected pose is in world space; this driver's pose is in its own frame,
+                // world = world_from_driver * driver.
+                let wd_rotation = quat_f32(p.world_from_driver_rotation);
+                let wd_translation = vec_f32(p.world_from_driver_translation);
+                let rotation = (wd_rotation.inverse() * inj.rotation).normalize();
+                let position = wd_rotation.inverse() * (inj.position - wd_translation);
+                p.rotation = host::Quaternion { w: rotation.w as f64, x: rotation.x as f64, y: rotation.y as f64, z: rotation.z as f64 };
+                p.position = [position.x as f64, position.y as f64, position.z as f64];
+                p.velocity = [0.0; 3];
+                p.acceleration = [0.0; 3];
+                p.angular_velocity = [0.0; 3];
+                p.angular_acceleration = [0.0; 3];
+                p.pose_is_valid = true;
+                p.result = host::TRACKING_RESULT_RUNNING_OK;
+                h.injected_poses += 1;
             }
         });
     })
@@ -99,11 +159,27 @@ pub unsafe extern "C" fn lf_hook_skeleton_update(handle: u64, motion_range: i32,
         }
         with_hooks(|h| {
             h.updates += 1;
+            let container = h.skeletons.iter().find(|s| s.0 == handle).map(|s| s.1);
             if !h.update_handles.contains(&handle) {
                 h.update_handles.push(handle);
-                let container = h.skeletons.iter().find(|s| s.0 == handle).map(|s| s.1);
                 log!("skeleton handle {handle} (container {container:?}): first bones through the hook, range {motion_range}, {count} bones");
+            }
+            let hand = container.and_then(|c| h.containers.iter().position(|hc| *hc == Some(c)));
+            if let Some(inj) = hand.and_then(|hand| h.injections[hand].as_ref()) {
+                if count as usize == BONE_COUNT {
+                    // SAFETY: `count` bones per the caller's contract.
+                    let out = unsafe { std::slice::from_raw_parts_mut(bones, count as usize) };
+                    out[2..].copy_from_slice(&inj.bones[2..]);
+                }
             }
         });
     })
+}
+
+fn quat_f32(q: host::Quaternion) -> Quat {
+    Quat::from_xyzw(q.x as f32, q.y as f32, q.z as f32, q.w as f32).normalize()
+}
+
+fn vec_f32(v: [f64; 3]) -> Vec3 {
+    Vec3::new(v[0] as f32, v[1] as f32, v[2] as f32)
 }

@@ -250,6 +250,11 @@ impl Properties {
         Properties(unsafe { ffi::lfh_prop_container(object_id) })
     }
 
+    /// The raw property container handle (what the input hooks see).
+    pub fn container(&self) -> u64 {
+        self.0
+    }
+
     pub fn set_string(&self, prop: i32, value: &str) -> &Self {
         let value = cstr(value);
         // SAFETY: the host copies the string.

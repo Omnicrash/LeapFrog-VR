@@ -14,6 +14,8 @@ pub struct Hand {
     pose: DriverPose,
     bones: [BoneTransform; BONE_COUNT],
     candidate: Option<DriverPose>,
+    /// The located hand in world space (rotation, wrist position), for the passthrough.
+    world: Option<(glam::Quat, Vec3)>,
     was_connected: bool,
 }
 
@@ -26,6 +28,7 @@ impl Hand {
             pose: DriverPose::disconnected(),
             bones: math::open_hand(index == host::HAND_LEFT),
             candidate: None,
+            world: None,
             was_connected: false,
         }
     }
@@ -124,6 +127,7 @@ impl Hand {
     /// bones computed and held back until `apply` decides whether this device drives the hand.
     pub fn locate(&mut self, sample: Option<&HandSample>, head: Option<&TrackedDevicePose>, offsets: &Offsets) -> Option<Vec3> {
         self.candidate = None;
+        self.world = None;
         let (sample, head) = (sample?, head?);
         if !head.pose_is_valid {
             return None;
@@ -140,7 +144,19 @@ impl Hand {
         pose.result = host::TRACKING_RESULT_RUNNING_OK;
         frame.skeleton(&mut self.bones);
         self.candidate = Some(pose);
-        Some(world_rotation * position + world_translation)
+        let world_position = world_rotation * position + world_translation;
+        self.world = Some((world_rotation * rotation, world_position));
+        Some(world_position)
+    }
+
+    /// The located hand in world space this frame: (rotation, wrist position).
+    pub fn world_pose(&self) -> Option<(glam::Quat, Vec3)> {
+        self.world
+    }
+
+    /// This frame's bones (the open-hand template where the Leap drives nothing).
+    pub fn bones(&self) -> &[BoneTransform; BONE_COUNT] {
+        &self.bones
     }
 
     /// Step two: connected while this device drives the hand; the located pose if there is one,
