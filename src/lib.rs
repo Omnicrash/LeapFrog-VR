@@ -252,22 +252,49 @@ impl State {
         for (i, hand) in self.hands.iter_mut().enumerate() {
             let hand_position = hand.locate(samples[i].as_ref(), head.as_ref(), &self.offsets);
             let controller = self.controllers.pose(i as u32, &self.poses);
-            let observation = Observation {
-                force_controller,
-                controller_known: controller.is_some(),
-                controller_on: controller.map(|c| c.device_is_connected).unwrap_or(false),
-                // Only a fully tracked pose: a controller that lost the base stations dead-reckons
-                // on its gyros and drifts, which must not look like a put-down.
-                controller_position: controller.filter(|c| c.pose_is_valid && c.tracking_result == host::TRACKING_RESULT_RUNNING_OK).map(|c| {
-                    let m = &c.device_to_absolute_tracking;
-                    Vec3::new(m[0][3], m[1][3], m[2][3])
-                }),
-                controller_rotation: controller.filter(|c| c.pose_is_valid).map(|c| math::Head::from_pose(c).rotation).unwrap_or(glam::Quat::IDENTITY),
-                controller_velocity: controller.map(|c| Vec3::from(c.velocity)).unwrap_or(Vec3::ZERO),
-                controller_angular_velocity: controller.map(|c| Vec3::from(c.angular_velocity)).unwrap_or(Vec3::ZERO),
-                hand_position,
-                hand_rotation: hand.world_pose().map(|(r, _)| r),
+            // While the Leap drives a controller (passthrough), the pose SteamVR reports for it
+            // is ours, so the switching takes the real one from the hook instead; without it the
+            // injected pose fed the pick-up rule and the hands flickered every 2 s (04:44).
+            let real = (self.passthrough && self.leap_drives[i]).then(|| hooks::real_pose(i)).flatten()
+                .filter(|r| now - r.at_us < 100_000);
+            let observation = match real {
+                Some(r) => Observation {
+                    force_controller,
+                    controller_known: controller.is_some(),
+                    controller_on: r.connected,
+                    controller_position: (r.valid && r.result == host::TRACKING_RESULT_RUNNING_OK).then_some(r.position),
+                    controller_rotation: r.rotation,
+                    controller_velocity: Vec3::new(r.speed, 0.0, 0.0),
+                    controller_angular_velocity: Vec3::new(r.angular_speed, 0.0, 0.0),
+                    hand_position,
+                    hand_rotation: hand.world_pose().map(|(r, _)| r),
+                },
+                None => Observation {
+                    force_controller,
+                    controller_known: controller.is_some(),
+                    controller_on: controller.map(|c| c.device_is_connected).unwrap_or(false),
+                    // Only a fully tracked pose: a controller that lost the base stations dead-reckons
+                    // on its gyros and drifts, which must not look like a put-down.
+                    controller_position: controller.filter(|c| c.pose_is_valid && c.tracking_result == host::TRACKING_RESULT_RUNNING_OK).map(|c| {
+                        let m = &c.device_to_absolute_tracking;
+                        Vec3::new(m[0][3], m[1][3], m[2][3])
+                    }),
+                    controller_rotation: controller.filter(|c| c.pose_is_valid).map(|c| math::Head::from_pose(c).rotation).unwrap_or(glam::Quat::IDENTITY),
+                    controller_velocity: controller.map(|c| Vec3::from(c.velocity)).unwrap_or(Vec3::ZERO),
+                    controller_angular_velocity: controller.map(|c| Vec3::from(c.angular_velocity)).unwrap_or(Vec3::ZERO),
+                    hand_position,
+                    hand_rotation: hand.world_pose().map(|(r, _)| r),
+                },
             };
+            // Self-check of the real-pose composition, once a second while the controller drives:
+            // hook-composed against SteamVR-reported; must be ~0 or the composition order is wrong.
+            if self.passthrough && !self.leap_drives[i] && self.frame % 90 == 30 {
+                if let (Some(r), Some(c)) = (hooks::real_pose(i).filter(|r| r.valid), controller.filter(|c| c.pose_is_valid)) {
+                    let reported = math::Head::from_pose(c);
+                    log!("{} real-pose check: hook composition {:.1} cm and {:.0} deg from SteamVR's report", hand.side(),
+                        (reported.translation - r.position).length() * 100.0, reported.rotation.angle_between(r.rotation).to_degrees());
+                }
+            }
             let driver = self.switches[i].update(now_s, &observation);
             let controller_id = self.controllers.index(i as u32);
             if controller_id != self.controller_ids[i] {

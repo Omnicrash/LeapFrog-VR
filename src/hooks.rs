@@ -41,8 +41,24 @@ struct Hooks {
     object_ids: [Option<u32>; 2],
     /// Each controller's world-from-driver transform, from the last pose lighthouse sent.
     frames: [Option<(Quat, Vec3)>; 2],
+    /// Each controller's last pose as lighthouse sent it, before any rewrite (the real one).
+    real: [Option<RealPose>; 2],
     injections: [Option<Injection>; 2],
     injected_poses: u64,
+}
+
+/// A controller's pose as its own driver sent it, composed into world space the way vrserver
+/// does (world_from_driver * pose * driver_from_head), with the raw flags.
+#[derive(Clone, Copy, Debug)]
+pub struct RealPose {
+    pub position: Vec3,
+    pub rotation: Quat,
+    pub speed: f32,
+    pub angular_speed: f32,
+    pub result: i32,
+    pub valid: bool,
+    pub connected: bool,
+    pub at_us: i64,
 }
 
 impl Hooks {
@@ -56,6 +72,7 @@ impl Hooks {
             containers: [None, None],
             object_ids: [None, None],
             frames: [None, None],
+            real: [None, None],
             injections: [None, None],
             injected_poses: 0,
         }
@@ -68,7 +85,14 @@ pub fn set_controller(hand: usize, object_id: Option<u32>, container: Option<u64
         h.object_ids[hand] = object_id;
         h.containers[hand] = container;
         h.frames[hand] = None;
+        h.real[hand] = None;
     });
+}
+
+/// The controller's last real pose (lighthouse's own, unmodified), for the switching while the
+/// reported pose is ours.
+pub fn real_pose(hand: usize) -> Option<RealPose> {
+    with_hooks(|h| h.real[hand]).flatten()
 }
 
 /// The controller's driver frame (world-from-driver rotation and translation) as lighthouse
@@ -90,6 +114,10 @@ pub fn write_pose(p: &mut DriverPose, inj: &Injection, frame: (Quat, Vec3)) {
     p.acceleration = [0.0; 3];
     p.angular_velocity = [0.0; 3];
     p.angular_acceleration = [0.0; 3];
+    // The injected pose is final: no driver-from-head offset on top (lighthouse's is logged
+    // at first sight; it is what put SteamVR's controller 16 cm from the injection, 04:44).
+    p.driver_from_head_rotation = host::Quaternion::IDENTITY;
+    p.driver_from_head_translation = [0.0; 3];
     p.pose_is_valid = true;
     p.device_is_connected = true;
     p.result = host::TRACKING_RESULT_RUNNING_OK;
@@ -131,13 +159,28 @@ pub unsafe extern "C" fn lf_hook_pose(object_id: u32, pose: *mut DriverPose) {
         let p = unsafe { &mut *pose };
         with_hooks(|h| {
             h.poses += 1;
+            let frame = (quat_f32(p.world_from_driver_rotation), vec_f32(p.world_from_driver_translation));
+            let dfh = (quat_f32(p.driver_from_head_rotation), vec_f32(p.driver_from_head_translation));
             if !h.pose_devices.contains(&object_id) {
                 h.pose_devices.push(object_id);
-                log!("device {object_id}: first pose through the hook (connected {}, valid {}, result {})", p.device_is_connected, p.pose_is_valid, p.result);
+                log!("device {object_id}: first pose through the hook (connected {}, valid {}, result {}; driver-from-head {:.1} cm, {:.0} deg; world-from-driver {:.2} {:.2} {:.2}, {:.0} deg)",
+                    p.device_is_connected, p.pose_is_valid, p.result, dfh.1.length() * 100.0, dfh.0.angle_between(Quat::IDENTITY).to_degrees(),
+                    frame.1.x, frame.1.y, frame.1.z, frame.0.angle_between(Quat::IDENTITY).to_degrees());
             }
-            let frame = (quat_f32(p.world_from_driver_rotation), vec_f32(p.world_from_driver_translation));
             if let Some(hand) = h.object_ids.iter().position(|id| *id == Some(object_id)) {
                 h.frames[hand] = Some(frame);
+                let rotation = quat_f32(p.rotation);
+                let position = vec_f32(p.position);
+                h.real[hand] = Some(RealPose {
+                    position: frame.0 * (rotation * dfh.1 + position) + frame.1,
+                    rotation: (frame.0 * rotation * dfh.0).normalize(),
+                    speed: vec_f32(p.velocity).length(),
+                    angular_speed: vec_f32(p.angular_velocity).length(),
+                    result: p.result,
+                    valid: p.pose_is_valid,
+                    connected: p.device_is_connected,
+                    at_us: crate::leap::now_us(),
+                });
                 if let Some(inj) = h.injections[hand] {
                     write_pose(p, &inj, frame);
                     h.injected_poses += 1;
