@@ -262,6 +262,12 @@ impl State {
             }
             if hand.apply(driver == Driver::Leap) {
                 self.transitions += 1;
+                // The inputs behind the decision, for reading a wrong one off the log.
+                let (result, valid, on) = controller.map(|c| (c.tracking_result, c.pose_is_valid, c.device_is_connected)).unwrap_or((0, false, false));
+                log!("  because: {}; controller result {result} valid {valid} on {on}, speed {:.2} m/s, turn {:.2} rad/s; hand {}, distance {}",
+                    self.switches[i].reason(), observation.controller_velocity.length(), observation.controller_angular_velocity.length(),
+                    if hand_position.is_some() { "seen" } else { "not seen" },
+                    self.switches[i].last_distance().map(|d| format!("{d:.2} m")).unwrap_or_else(|| "n/a".to_string()));
                 if self.transitions >= TRANSITION_WARNING && (self.transitions - TRANSITION_WARNING) % 25 == 0 {
                     log!("{} hand transitions this session: SteamVR stops rebinding apps after about 125 (VRChat) and 400 (dashboard); restart VRChat or SteamVR when convenient", self.transitions);
                 }
