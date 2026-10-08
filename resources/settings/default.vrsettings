@@ -16,7 +16,6 @@
     "handInwardOffset": 0.01,
     "passthrough": true,
     "exposeAsFullTrackingMode": false,
-    "tuneFile": false,
     "autoPickupSwitch": true,
     "awayDistance": 0.20,
     "nearDistance": 0.15,

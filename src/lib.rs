@@ -108,52 +108,27 @@ fn tracking_hints() -> Option<String> {
 
 fn read_thresholds() -> Thresholds {
     let d = Thresholds::default();
-    let t = tune_overrides();
     Thresholds {
-        away_m: tuned_float(&t, "awayDistance", d.away_m),
-        near_m: tuned_float(&t, "nearDistance", d.near_m),
-        still_mps: tuned_float(&t, "stillSpeed", d.still_mps),
-        pickup_mps: tuned_float(&t, "pickupSpeed", d.pickup_mps),
+        away_m: host::setting_float("awayDistance", d.away_m),
+        near_m: host::setting_float("nearDistance", d.near_m),
+        still_mps: host::setting_float("stillSpeed", d.still_mps),
+        pickup_mps: host::setting_float("pickupSpeed", d.pickup_mps),
     }
-}
-
-/// Live overrides from `tune.txt` next to the driver DLL (`key=value` per line, the setting
-/// names), read once a second while `tuneFile` is on: SteamVR does not reload
-/// steamvr.vrsettings while it runs, so tuning by eye goes through this file
-/// (`tools/offsettune.ps1` writes it). Off or absent = no overrides.
-fn tune_overrides() -> Vec<(String, f32)> {
-    if !host::setting_bool("tuneFile", false) {
-        return Vec::new();
-    }
-    let Some(dir) = service::own_directory() else { return Vec::new() };
-    let Ok(text) = std::fs::read_to_string(dir.join("tune.txt")) else { return Vec::new() };
-    text.lines()
-        .filter_map(|line| {
-            let (key, value) = line.split_once('=')?;
-            Some((key.trim().to_string(), value.trim().parse::<f32>().ok()?))
-        })
-        .collect()
-}
-
-/// A float setting, with a `tune.txt` override when present.
-fn tuned_float(overrides: &[(String, f32)], key: &str, fallback: f32) -> f32 {
-    overrides.iter().find(|(k, _)| k == key).map(|(_, v)| *v).unwrap_or_else(|| host::setting_float(key, fallback))
 }
 
 fn read_offsets() -> Offsets {
-    let t = tune_overrides();
     Offsets {
         position: Vec3::new(
-            tuned_float(&t, "handOffsetX", -0.01),
-            tuned_float(&t, "handOffsetY", 0.06),
-            tuned_float(&t, "handOffsetZ", -0.08),
+            host::setting_float("handOffsetX", -0.01),
+            host::setting_float("handOffsetY", 0.06),
+            host::setting_float("handOffsetZ", -0.08),
         ),
         rotation_degrees: Vec3::new(
-            tuned_float(&t, "rotationOffsetX", 0.0),
-            tuned_float(&t, "rotationOffsetY", 0.0),
-            tuned_float(&t, "rotationOffsetZ", 0.0),
+            host::setting_float("rotationOffsetX", 0.0),
+            host::setting_float("rotationOffsetY", 0.0),
+            host::setting_float("rotationOffsetZ", 0.0),
         ),
-        inward: tuned_float(&t, "handInwardOffset", 0.01),
+        inward: host::setting_float("handInwardOffset", 0.01),
     }
 }
 
@@ -261,7 +236,7 @@ impl State {
         self.frame = self.frame.wrapping_add(1);
         if self.frame % 90 == 0 {
             self.pickup_enabled = host::setting_bool("autoPickupSwitch", true);
-            // Offsets are live too, so they can be tuned by eye without restarts.
+            // Offsets are live too, so the panel can tune them by eye without restarts.
             let offsets = read_offsets();
             if offsets != self.offsets {
                 self.offsets = offsets;

@@ -145,7 +145,6 @@ FloatSetting g_switching[] = {
 BoolSetting g_pickup = {"Automatic switching", "autoPickupSwitch", true, true, true, "If disabled, hands only track while controllers are off", false, nullptr};
 
 BoolSetting g_driver[] = {
-    {"Enabled", "enable", true, false, true, "When off, the driver does nothing", false, nullptr},
     {"Passthrough", "passthrough", true, false, true, "The controller shows the tracked hand while resting", false, nullptr},
     {"Full tracking mode", "exposeAsFullTrackingMode", false, false, false, "Tell games the controller is fully hand tracked", false, "Breaks the pointer and the B menu button in VRChat"},
     {"Manage service", "manageService", true, false, true, "Automatically start and stop the Ultraleap service with SteamVR", false, nullptr},
