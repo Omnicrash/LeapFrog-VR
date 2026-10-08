@@ -50,6 +50,9 @@ struct State {
     room_setup: bool,
     /// LF-6: the controllers stay the hand devices and get the Leap's data while put down.
     passthrough: bool,
+    /// DEBUG: the Leap device connects as well while it drives, next to the injected
+    /// controller, so the two can be compared in SteamVR Home and in the log.
+    passthrough_both: bool,
     /// Per hand: whether the Leap drives the controller right now, and which controller.
     leap_drives: [bool; 2],
     controller_ids: [Option<u32>; 2],
@@ -160,6 +163,7 @@ pub extern "C" fn lf_init() -> i32 {
             pickup_enabled: host::setting_bool("pickupSwitching", true),
             room_setup: false,
             passthrough: host::setting_bool("passthrough", false),
+            passthrough_both: host::setting_bool("passthroughBoth", false),
             leap_drives: [false, false],
             controller_ids: [None, None],
             frame: 0,
@@ -312,6 +316,12 @@ impl State {
                             let d_rot = reported.rotation.angle_between(inj.rotation).to_degrees();
                             log!("{} injection check: SteamVR reports the controller {d_pos:.1} cm and {d_rot:.0} deg from the injected pose (injected {:.2} {:.2} {:.2}, reported {:.2} {:.2} {:.2}, raw result {} valid {})",
                                 hand.side(), inj.position.x, inj.position.y, inj.position.z, reported.translation.x, reported.translation.y, reported.translation.z, raw.tracking_result, raw.pose_is_valid);
+                            // DEBUG: with the Leap device connected too, device against device.
+                            if let Some(leap_raw) = hand.object_id.and_then(|id| self.poses.get(id as usize)).filter(|p| p.pose_is_valid) {
+                                let leap = math::Head::from_pose(leap_raw);
+                                log!("{} device check: SteamVR reports the Leap device {:.1} cm and {:.0} deg from the controller",
+                                    hand.side(), (leap.translation - reported.translation).length() * 100.0, leap.rotation.angle_between(reported.rotation).to_degrees());
+                            }
                         }
                     }
                 }
@@ -327,7 +337,7 @@ impl State {
                     if hand_position.is_some() { "seen" } else { "not seen" },
                     self.switches[i].last_distance().map(|d| format!("{d:.2} m")).unwrap_or_else(|| "n/a".to_string()));
             }
-            if hand.apply(driver == Driver::Leap && !composite) {
+            if hand.apply(driver == Driver::Leap && (!composite || self.passthrough_both)) {
                 self.transitions += 1;
                 // The inputs behind the decision, for reading a wrong one off the log.
                 let (result, valid, on) = controller.map(|c| (c.tracking_result, c.pose_is_valid, c.device_is_connected)).unwrap_or((0, false, false));
