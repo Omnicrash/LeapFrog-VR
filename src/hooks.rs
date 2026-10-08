@@ -164,15 +164,15 @@ pub unsafe extern "C" fn lf_hook_pose(object_id: u32, pose: *mut DriverPose) {
 #[no_mangle]
 pub unsafe extern "C" fn lf_hook_skeleton_create(container: u64, name: *const std::os::raw::c_char, skeleton_path: *const std::os::raw::c_char, tracking_level: i32) -> i32 {
     guard("hook_skeleton_create", tracking_level, || {
-        // fullSkeleton (read now, when the controller activates: the level is fixed from here
-        // on): report the controller's skeleton as Full instead of the level its driver asked
-        // for (Partial for Index). Off, the default: VRChat stays in controller mode, pointer
+        // exposeAsFullTrackingMode (read now, when the controller activates: the level is fixed
+        // from here on): label the controller's skeleton Full instead of the level its driver
+        // asked for (Partial for Index); the bone data is the same either way. Off, the default: VRChat stays in controller mode, pointer
         // and buttons as usual, and the fingers are fully articulated from the skeleton, the
         // Leap's while put down (confirmed 2026-10-08 06:50). On: VRChat switches to its
         // hand-tracking mode for the controller (pinch controls with it down, but the pointer
         // comes from the hand and the menu from a gesture).
-        let level = if host::setting_bool("fullSkeleton", false) { crate::host::SKELETAL_TRACKING_FULL } else { tracking_level };
-        log!("skeleton {} ({}) on container {container}: level {tracking_level} requested, {} registered", c_str(name), c_str(skeleton_path), if level == crate::host::SKELETAL_TRACKING_FULL { "Full (fullSkeleton)" } else { "as requested" });
+        let level = if host::setting_bool("exposeAsFullTrackingMode", false) { crate::host::SKELETAL_TRACKING_FULL } else { tracking_level };
+        log!("skeleton {} ({}) on container {container}: level {tracking_level} requested, {} registered", c_str(name), c_str(skeleton_path), if level == crate::host::SKELETAL_TRACKING_FULL { "Full (exposeAsFullTrackingMode)" } else { "as requested" });
         level
     })
 }
