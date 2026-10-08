@@ -50,8 +50,6 @@ pub struct Observation {
     pub controller_position: Option<Vec3>,
     pub controller_rotation: Quat,
     pub controller_velocity: Vec3,
-    /// From the gyro, so it holds up without optical tracking (rad/s).
-    pub controller_angular_velocity: Vec3,
     pub hand_position: Option<Vec3>,
 }
 
@@ -224,7 +222,6 @@ mod tests {
             controller_position: Some(controller),
             controller_rotation: Quat::IDENTITY,
             controller_velocity: Vec3::new(speed, 0.0, 0.0),
-            controller_angular_velocity: Vec3::ZERO,
             hand_position: hand,
         }
     }

@@ -304,7 +304,6 @@ impl State {
                         controller_position: (fresh && r.valid && r.result == host::TRACKING_RESULT_RUNNING_OK).then_some(r.position),
                         controller_rotation: r.rotation,
                         controller_velocity: if fresh { Vec3::new(r.speed, 0.0, 0.0) } else { Vec3::ZERO },
-                        controller_angular_velocity: if fresh { Vec3::new(r.angular_speed, 0.0, 0.0) } else { Vec3::ZERO },
                         hand_position,
                     }
                 }
@@ -320,7 +319,6 @@ impl State {
                     }),
                     controller_rotation: controller.filter(|c| c.pose_is_valid).map(|c| math::Head::from_pose(c).rotation).unwrap_or(glam::Quat::IDENTITY),
                     controller_velocity: controller.map(|c| Vec3::from(c.velocity)).unwrap_or(Vec3::ZERO),
-                    controller_angular_velocity: controller.map(|c| Vec3::from(c.angular_velocity)).unwrap_or(Vec3::ZERO),
                     hand_position,
                 },
             };
