@@ -47,6 +47,8 @@ struct Hooks {
     real: [Option<RealPose>; 2],
     injections: [Option<Injection>; 2],
     injected_poses: u64,
+    /// Bone updates seen per hand since the last `take_bone_updates`.
+    bone_updates: [u32; 2],
 }
 
 /// A controller's pose as its own driver sent it, composed into world space the way vrserver
@@ -77,6 +79,7 @@ impl Hooks {
             real: [None, None],
             injections: [None, None],
             injected_poses: 0,
+            bone_updates: [0, 0],
         }
     }
 }
@@ -128,6 +131,16 @@ pub fn write_pose(p: &mut DriverPose, inj: &Injection, frame: (Quat, Vec3)) {
 /// The frame loop sets (or clears) what the hooks write into a hand's controller.
 pub fn set_injection(hand: usize, injection: Option<Injection>) {
     with_hooks(|h| h.injections[hand] = injection);
+}
+
+/// The current injection for a hand, if any.
+pub fn injection(hand: usize) -> Option<Injection> {
+    with_hooks(|h| h.injections[hand]).flatten()
+}
+
+/// Bone updates the controller's own driver sent for this hand since the last call.
+pub fn take_bone_updates(hand: usize) -> u32 {
+    with_hooks(|h| std::mem::take(&mut h.bone_updates[hand])).unwrap_or(0)
 }
 
 /// How many controller poses have been replaced so far (for the log).
@@ -233,6 +246,9 @@ pub unsafe extern "C" fn lf_hook_skeleton_update(handle: u64, motion_range: i32,
                 log!("skeleton handle {handle} (container {container:?}): first bones through the hook, range {motion_range}, {count} bones");
             }
             let hand = container.and_then(|c| h.containers.iter().position(|hc| *hc == Some(c)));
+            if let Some(hand) = hand {
+                h.bone_updates[hand] = h.bone_updates[hand].saturating_add(1);
+            }
             if let Some(inj) = hand.and_then(|hand| h.injections[hand].as_ref()) {
                 if count as usize == BONE_COUNT {
                     // SAFETY: `count` bones per the caller's contract.

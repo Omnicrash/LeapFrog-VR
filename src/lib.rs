@@ -313,13 +313,13 @@ impl State {
                 hooks::set_controller(i, controller_id, controller_id.map(|id| host::Properties::of(id).container()));
             }
             if self.frame % 900 == 0 {
-                if let Some(grip) = self.switches[i].grip() {
-                    let (hp, hr) = self.held_relation[i];
-                    let (y, x, z) = hr.to_euler(glam::EulerRot::YXZ);
-                    log!("{} grip point (wrist in the controller frame): {:.3} {:.3} {:.3} m; held relation {:.3} {:.3} {:.3} m, yaw {:.0} pitch {:.0} roll {:.0} deg{}",
-                        hand.side(), grip.x, grip.y, grip.z, hp.x, hp.y, hp.z, y.to_degrees(), x.to_degrees(), z.to_degrees(),
-                        if self.passthrough { format!(", {} poses injected", hooks::injected_poses()) } else { String::new() });
-                }
+                let grip = self.switches[i].grip();
+                let (hp, hr) = self.held_relation[i];
+                let (y, x, z) = hr.to_euler(glam::EulerRot::YXZ);
+                log!("{} grip point: {}; held relation {:.3} {:.3} {:.3} m, yaw {:.0} pitch {:.0} roll {:.0} deg{}",
+                    hand.side(), grip.map(|g| format!("{:.3} {:.3} {:.3} m", g.x, g.y, g.z)).unwrap_or_else(|| "prior".to_string()),
+                    hp.x, hp.y, hp.z, y.to_degrees(), x.to_degrees(), z.to_degrees(),
+                    if self.passthrough { format!(", {} poses injected, {} bone updates by the controller's driver in the last 10 s", hooks::injected_poses(), hooks::take_bone_updates(i)) } else { String::new() });
             }
             // Passthrough (LF-6): with its controller on, the controller stays the hand device
             // and gets the Leap's pose and fingers while the Leap drives; the Leap device only
@@ -391,6 +391,14 @@ impl State {
             if leap_drives != self.leap_drives[i] {
                 self.leap_drives[i] = leap_drives;
                 log!("{} hand: {} drives the controller", hand.side(), if leap_drives { "the Leap" } else { "the controller" });
+                if leap_drives {
+                    // Held placement must start exactly at the real pose; anything else is a
+                    // wrong relation.
+                    if let (Some(inj), Some(c)) = (hooks::injection(i), controller.filter(|c| c.pose_is_valid)) {
+                        let real = math::Head::from_pose(c);
+                        log!("  put-down check: injected pose {:.1} cm and {:.0} deg from the controller's real pose", (inj.position - real.translation).length() * 100.0, inj.rotation.angle_between(real.rotation).to_degrees());
+                    }
+                }
                 let (result, valid, on) = controller.map(|c| (c.tracking_result, c.pose_is_valid, c.device_is_connected)).unwrap_or((0, false, false));
                 log!("  because: {}; controller result {result} valid {valid} on {on}, speed {:.2} m/s, turn {:.2} rad/s; hand {}, distance {}",
                     self.switches[i].reason(), observation.controller_velocity.length(), observation.controller_angular_velocity.length(),
