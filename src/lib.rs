@@ -145,9 +145,9 @@ fn read_offsets() -> Offsets {
     let t = tune_overrides();
     Offsets {
         position: Vec3::new(
-            tuned_float(&t, "handOffsetX", 0.0),
-            tuned_float(&t, "handOffsetY", 0.0),
-            tuned_float(&t, "handOffsetZ", -0.01),
+            tuned_float(&t, "handOffsetX", -0.01),
+            tuned_float(&t, "handOffsetY", 0.06),
+            tuned_float(&t, "handOffsetZ", -0.08),
         ),
         rotation_degrees: Vec3::new(
             tuned_float(&t, "rotationOffsetX", 0.0),
