@@ -112,11 +112,8 @@ fn read_thresholds() -> Thresholds {
     Thresholds {
         away_m: tuned_float(&t, "awayDistance", d.away_m),
         near_m: tuned_float(&t, "nearDistance", d.near_m),
-        away_s: tuned_float(&t, "awayTime", d.away_s),
         still_mps: tuned_float(&t, "stillSpeed", d.still_mps),
         pickup_mps: tuned_float(&t, "pickupSpeed", d.pickup_mps),
-        spacing_s: tuned_float(&t, "switchSpacing", d.spacing_s),
-        dead_s: tuned_float(&t, "deadSpotTime", d.dead_s),
     }
 }
 
@@ -187,7 +184,7 @@ pub extern "C" fn lf_init() -> i32 {
             switches: [Switch::new(thresholds), Switch::new(thresholds)],
             thresholds,
             offsets,
-            pickup_enabled: host::setting_bool("pickupSwitching", true),
+            pickup_enabled: host::setting_bool("autoPickupSwitch", true),
             room_setup: false,
             passthrough: host::setting_bool("passthrough", false),
             leap_drives: [false, false],
@@ -257,11 +254,11 @@ impl State {
         let head = self.poses.first().copied();
         let now_s = now as f64 * 1e-6;
 
-        // Once a second: the live switch (pickupSwitching off = stage 1, controller power alone
+        // Once a second: the live switch (autoPickupSwitch off = stage 1, controller power alone
         // decides) and whether SteamVR's room setup is running, which needs the controllers.
         self.frame = self.frame.wrapping_add(1);
         if self.frame % 90 == 0 {
-            self.pickup_enabled = host::setting_bool("pickupSwitching", true);
+            self.pickup_enabled = host::setting_bool("autoPickupSwitch", true);
             // Offsets are live too, so they can be tuned by eye without restarts.
             let offsets = read_offsets();
             if offsets != self.offsets {
@@ -322,7 +319,7 @@ impl State {
                     hand_position,
                 },
             };
-            let driver = self.switches[i].update(now_s, &observation);
+            let driver = self.switches[i].update(&observation);
             let controller_id = self.controllers.index(i as u32);
             if controller_id != self.controller_ids[i] {
                 self.controller_ids[i] = controller_id;
