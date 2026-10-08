@@ -15,9 +15,8 @@ use crate::log::log;
 use crate::math::BONE_COUNT;
 
 /// What the frame loop wants written into a controller while the Leap drives its hand: the
-/// pose the controller would have if held with the hand where the Leap sees it (world space),
-/// and the Leap's bones. Fingers only (bones 2..): the controller's own root and wrist bones
-/// carry its origin-to-wrist offset, which the fingers hang from.
+/// Leap hand device's own pose (world space) and its full skeleton, root and wrist included,
+/// so the controller is that device while put down.
 #[derive(Clone, Copy)]
 pub struct Injection {
     pub object_id: u32,
@@ -193,7 +192,7 @@ pub unsafe extern "C" fn lf_hook_skeleton_update(handle: u64, motion_range: i32,
                 if count as usize == BONE_COUNT {
                     // SAFETY: `count` bones per the caller's contract.
                     let out = unsafe { std::slice::from_raw_parts_mut(bones, count as usize) };
-                    out[2..].copy_from_slice(&inj.bones[2..]);
+                    out.copy_from_slice(&inj.bones);
                 }
             }
         });
