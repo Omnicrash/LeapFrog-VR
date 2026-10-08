@@ -1,6 +1,6 @@
-//! Which Index controller is on. Found through the host's raw poses and properties only (no
-//! hooks): a controller of type "knuckles" with a left/right role hint. Its connected flag in the
-//! raw poses is the power state SteamVR sees; a Leap hand stands in while its controller is off.
+//! Which Index controller is on. Found through the host's raw poses and properties: a controller
+//! of type "knuckles" with a left/right role hint. Its connected flag in the raw poses is the
+//! power state SteamVR sees; a Leap hand device stands in while its controller is off.
 
 use crate::host::{self, prop, Properties, TrackedDevicePose};
 use crate::log::log;
