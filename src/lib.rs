@@ -56,6 +56,9 @@ struct State {
     /// Per hand: whether the Leap drives the controller right now, and which controller.
     leap_drives: [bool; 2],
     controller_ids: [Option<u32>; 2],
+    /// DEBUG: with a controller on, flip the data source between the controller's own and the
+    /// Leap's every this many seconds (0 = off), to compare the two placements by eye.
+    debug_alternate_s: f32,
 
 
     frame: u32,
@@ -167,6 +170,7 @@ pub extern "C" fn lf_init() -> i32 {
             passthrough_both: host::setting_bool("passthroughBoth", false),
             leap_drives: [false, false],
             controller_ids: [None, None],
+            debug_alternate_s: host::setting_float("debugAlternate", 0.0),
             frame: 0,
             transitions: 0,
             debug_panic_pending: host::setting_bool("debugPanic", false),
@@ -242,6 +246,11 @@ impl State {
                 self.offsets = offsets;
                 log!("offsets changed: {offsets:?}");
             }
+            let alternate = host::setting_float("debugAlternate", 0.0);
+            if alternate != self.debug_alternate_s {
+                self.debug_alternate_s = alternate;
+                log!("debugAlternate {}", if alternate > 0.0 { format!("every {alternate} s") } else { "off".to_string() });
+            }
             let room_setup = service::process_running("steamvr_room_setup.exe");
             if room_setup != self.room_setup {
                 self.room_setup = room_setup;
@@ -306,7 +315,8 @@ impl State {
             // and gets the Leap's pose and fingers while the Leap drives; the Leap device only
             // connects for a controller that is off.
             let composite = self.passthrough && observation.controller_on;
-            let leap_drives = composite && driver == Driver::Leap;
+            let alternating = composite && self.debug_alternate_s > 0.0;
+            let leap_drives = composite && if alternating { (now_s / self.debug_alternate_s as f64) as i64 % 2 == 1 } else { driver == Driver::Leap };
             if composite {
                 // While held, the controller's own data passes untouched: an injected pose while
                 // held turns the dashboard model and the pointer with the hand, and the Leap's
@@ -352,8 +362,9 @@ impl State {
             } else {
                 hooks::set_injection(i, None);
             }
-            if leap_drives != self.leap_drives[i] {
-                self.leap_drives[i] = leap_drives;
+            let changed = leap_drives != self.leap_drives[i];
+            self.leap_drives[i] = leap_drives;
+            if changed && !alternating {
                 log!("{} hand: {} drives the controller", hand.side(), if leap_drives { "the Leap" } else { "the controller" });
                 let (result, valid, on) = controller.map(|c| (c.tracking_result, c.pose_is_valid, c.device_is_connected)).unwrap_or((0, false, false));
                 log!("  because: {}; controller result {result} valid {valid} on {on}, speed {:.2} m/s, turn {:.2} rad/s; hand {}, distance {}",

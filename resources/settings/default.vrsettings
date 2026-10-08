@@ -17,6 +17,7 @@
     "passthrough": true,
     "indexSkeletonFull": true,
     "passthroughBoth": false,
+    "debugAlternate": 0.0,
     "pickupSwitching": true,
     "awayDistance": 0.20,
     "nearDistance": 0.15,
