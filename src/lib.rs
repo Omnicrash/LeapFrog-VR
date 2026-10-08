@@ -302,6 +302,18 @@ impl State {
                     let mut pose = host::DriverPose::disconnected();
                     hooks::write_pose(&mut pose, &inj, frame);
                     host::pose_updated(inj.object_id, &pose);
+                    // Self-check, once a second: what SteamVR reports for the controller (this
+                    // frame's raw pose) against what was injected last frame. Faithful = a few
+                    // mm and degrees; anything else is our math or frame.
+                    if self.frame % 90 == 45 {
+                        if let Some(raw) = controller {
+                            let reported = math::Head::from_pose(raw);
+                            let d_pos = (reported.translation - inj.position).length() * 100.0;
+                            let d_rot = reported.rotation.angle_between(inj.rotation).to_degrees();
+                            log!("{} injection check: SteamVR reports the controller {d_pos:.1} cm and {d_rot:.0} deg from the injected pose (injected {:.2} {:.2} {:.2}, reported {:.2} {:.2} {:.2}, raw result {} valid {})",
+                                hand.side(), inj.position.x, inj.position.y, inj.position.z, reported.translation.x, reported.translation.y, reported.translation.z, raw.tracking_result, raw.pose_is_valid);
+                        }
+                    }
                 }
             } else {
                 hooks::set_injection(i, None);
