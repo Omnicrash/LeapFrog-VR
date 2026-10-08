@@ -74,8 +74,17 @@ pub struct Switch {
     last_distance: Option<f32>,
 }
 
-/// Samples before the learned grip point is trusted over the tracked origin.
+/// Samples before the learned grip point is trusted over the prior.
 const GRIP_SAMPLES: u32 = 45;
+
+/// Where the wrist sits in the Index controller's frame while held, as learned on DCM1 across
+/// sessions (within a few cm of this each time: 0.20-0.24 m from the tracked origin, mostly
+/// forward). The reference until the grip is learned; before this prior the origin was the
+/// reference and a held hand measured 0.22-0.25 m "away" (2026-10-08, 03:38).
+const GRIP_PRIOR: Vec3 = Vec3::new(0.0, 0.07, 0.21);
+
+/// The away threshold while the grip is still the prior, which may be off by a hand's width.
+const AWAY_UNLEARNED_M: f32 = 0.35;
 
 /// Gyro reading below which an untracked controller counts as lying still (rad/s); a hand holding
 /// one is rarely this steady for `dead_s`, a table always is.
@@ -83,12 +92,17 @@ const DEAD_TURN_RPS: f32 = 0.3;
 
 impl Switch {
     pub fn new(thresholds: Thresholds) -> Switch {
-        Switch { state: Driver::Controller, away_since: None, dark_since: None, controller_known: false, locked_until: 0.0, grip: Vec3::ZERO, grip_samples: 0, thresholds, reason: "start", last_distance: None }
+        Switch { state: Driver::Controller, away_since: None, dark_since: None, controller_known: false, locked_until: 0.0, grip: GRIP_PRIOR, grip_samples: 0, thresholds, reason: "start", last_distance: None }
     }
 
-    /// The learned grip point (wrist in the controller frame) once trusted.
+    /// The learned grip point (wrist in the controller frame) once trusted; before that the
+    /// reference is [`GRIP_PRIOR`].
     pub fn grip(&self) -> Option<Vec3> {
-        (self.grip_samples >= GRIP_SAMPLES).then_some(self.grip)
+        self.learned().then_some(self.grip)
+    }
+
+    fn learned(&self) -> bool {
+        self.grip_samples >= GRIP_SAMPLES
     }
 
     /// Why the state is what it is (the rule that set it last).
@@ -164,18 +178,15 @@ impl Switch {
             // Learn the grip while the controller drives and clearly moves with the hand in view:
             // quickly in the first second, then slowly and only near the point already known.
             if self.state == Driver::Controller && speed > 0.5 {
-                if self.grip_samples < GRIP_SAMPLES && local.length() < 0.3 {
+                if !self.learned() && local.length() < 0.3 {
+                    // The first sample replaces the prior; the rest average in.
                     self.grip = self.grip.lerp(local, 1.0 / (self.grip_samples as f32 + 1.0));
                     self.grip_samples += 1;
-                } else if self.grip_samples >= GRIP_SAMPLES && local.distance(self.grip) < 0.25 {
+                } else if self.learned() && local.distance(self.grip) < 0.25 {
                     self.grip = self.grip.lerp(local, 0.02);
                 }
             }
-            let reference = match self.grip() {
-                Some(grip) => controller + o.controller_rotation * grip,
-                None => controller,
-            };
-            hand.distance(reference)
+            hand.distance(controller + o.controller_rotation * self.grip)
         });
         self.last_distance = distance;
         match self.state {
@@ -187,11 +198,12 @@ impl Switch {
                 }
             }
             Driver::Controller => {
-                let away = may_switch && distance.is_some_and(|d| d > t.away_m) && speed < t.still_mps;
+                let away_m = if self.learned() { t.away_m } else { t.away_m.max(AWAY_UNLEARNED_M) };
+                let away = may_switch && distance.is_some_and(|d| d > away_m) && speed < t.still_mps;
                 if !away {
                     self.away_since = None;
                 } else {
-                    let delay = if self.grip().is_some() { t.away_s } else { t.away_s.max(0.5) };
+                    let delay = if self.learned() { t.away_s } else { t.away_s.max(0.5) };
                     let since = *self.away_since.get_or_insert(now_s);
                     if now_s - since >= delay as f64 {
                         self.switch(Driver::Leap, now_s, "hand away, controller still");
@@ -206,6 +218,9 @@ impl Switch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Where the wrist is while holding a controller at the origin, by the prior.
+    const HELD: Vec3 = GRIP_PRIOR;
 
     fn obs(on: bool, controller: Vec3, speed: f32, hand: Option<Vec3>) -> Observation {
         Observation {
@@ -233,6 +248,14 @@ mod tests {
         let far = Some(Vec3::new(0.5, 0.0, 0.0));
         assert_eq!(s.update(0.0, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Controller);
         assert_eq!(s.update(0.3, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Controller);
+        // A hand where it is when holding (the prior), or 20 cm off that (an unlearned grip
+        // can be off by that much), is not away.
+        let mut held = Switch::new(Thresholds { away_s: 0.5, ..Thresholds::default() });
+        for (i, hand) in [HELD, HELD + Vec3::new(0.2, 0.0, 0.0)].iter().enumerate() {
+            for j in 0..30 {
+                assert_eq!(held.update(i as f64 * 10.0 + j as f64 * 0.1, &obs(true, Vec3::ZERO, 0.0, Some(*hand))), Driver::Controller);
+            }
+        }
         // Jitter in the controller resets the timer.
         assert_eq!(s.update(0.4, &obs(true, Vec3::ZERO, 0.3, far)), Driver::Controller);
         assert_eq!(s.update(0.8, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Controller);
@@ -242,7 +265,7 @@ mod tests {
     #[test]
     fn hand_near_controller_stays_controller() {
         let mut s = Switch::new(Thresholds::default());
-        let near = Some(Vec3::new(0.05, 0.0, 0.0));
+        let near = Some(HELD);
         for i in 0..20 {
             assert_eq!(s.update(i as f64 * 0.1, &obs(true, Vec3::ZERO, 0.0, near)), Driver::Controller);
         }
@@ -261,7 +284,7 @@ mod tests {
     fn hand_at_controller_picks_it_up() {
         let mut s = Switch::new(Thresholds::default());
         assert_eq!(s.update(0.0, &obs(false, Vec3::ZERO, 0.0, None)), Driver::Leap);
-        assert_eq!(s.update(1.0, &obs(true, Vec3::ZERO, 0.0, Some(Vec3::new(0.05, 0.0, 0.0)))), Driver::Controller);
+        assert_eq!(s.update(1.0, &obs(true, Vec3::ZERO, 0.0, Some(HELD))), Driver::Controller);
     }
 
     #[test]
@@ -348,7 +371,7 @@ mod tests {
     #[test]
     fn dead_spot_hands_over_when_still_and_hand_seen() {
         let far = Some(Vec3::new(0.5, 0.0, 0.0));
-        let near = Some(Vec3::new(0.05, 0.0, 0.0));
+        let near = Some(HELD);
         let dark = |hand: Option<Vec3>, turn: f32| {
             let mut o = obs(true, Vec3::ZERO, 0.0, hand);
             o.controller_position = None;
@@ -384,7 +407,7 @@ mod tests {
     fn transitions_are_spaced_in_both_directions() {
         let mut s = Switch::new(Thresholds::default());
         let far = Some(Vec3::new(0.5, 0.0, 0.0));
-        let near = Some(Vec3::new(0.05, 0.0, 0.0));
+        let near = Some(HELD);
         assert_eq!(s.update(0.0, &obs(false, Vec3::ZERO, 0.0, far)), Driver::Leap);
         assert_eq!(s.update(1.0, &obs(true, Vec3::ZERO, 0.6, far)), Driver::Controller); // picked up
         // Put down right away: not before the spacing is over.
