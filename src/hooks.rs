@@ -39,6 +39,9 @@ struct Hooks {
     updates: u64,
     /// Per hand: the controller's property container (to find its skeleton) and what to inject.
     containers: [Option<u64>; 2],
+    object_ids: [Option<u32>; 2],
+    /// Each controller's world-from-driver transform, from the last pose lighthouse sent.
+    frames: [Option<(Quat, Vec3)>; 2],
     injections: [Option<Injection>; 2],
     injected_poses: u64,
 }
@@ -52,15 +55,45 @@ impl Hooks {
             update_handles: Vec::new(),
             updates: 0,
             containers: [None, None],
+            object_ids: [None, None],
+            frames: [None, None],
             injections: [None, None],
             injected_poses: 0,
         }
     }
 }
 
-/// The frame loop names a hand's controller by its property container, once known.
-pub fn set_container(hand: usize, container: Option<u64>) {
-    with_hooks(|h| h.containers[hand] = container);
+/// The frame loop names a hand's controller (device id and property container), once known.
+pub fn set_controller(hand: usize, object_id: Option<u32>, container: Option<u64>) {
+    with_hooks(|h| {
+        h.object_ids[hand] = object_id;
+        h.containers[hand] = container;
+        h.frames[hand] = None;
+    });
+}
+
+/// The controller's driver frame (world-from-driver rotation and translation) as lighthouse
+/// last reported it, for poses the frame loop sends itself while lighthouse sends none.
+pub fn driver_frame(hand: usize) -> Option<(Quat, Vec3)> {
+    with_hooks(|h| h.frames[hand]).flatten()
+}
+
+/// Writes an injection into a pose expressed in the given driver frame (world = frame * driver).
+pub fn write_pose(p: &mut DriverPose, inj: &Injection, frame: (Quat, Vec3)) {
+    let (wd_rotation, wd_translation) = frame;
+    let rotation = (wd_rotation.inverse() * inj.rotation).normalize();
+    let position = wd_rotation.inverse() * (inj.position - wd_translation);
+    p.world_from_driver_rotation = host::Quaternion { w: wd_rotation.w as f64, x: wd_rotation.x as f64, y: wd_rotation.y as f64, z: wd_rotation.z as f64 };
+    p.world_from_driver_translation = [wd_translation.x as f64, wd_translation.y as f64, wd_translation.z as f64];
+    p.rotation = host::Quaternion { w: rotation.w as f64, x: rotation.x as f64, y: rotation.y as f64, z: rotation.z as f64 };
+    p.position = [position.x as f64, position.y as f64, position.z as f64];
+    p.velocity = [0.0; 3];
+    p.acceleration = [0.0; 3];
+    p.angular_velocity = [0.0; 3];
+    p.angular_acceleration = [0.0; 3];
+    p.pose_is_valid = true;
+    p.device_is_connected = true;
+    p.result = host::TRACKING_RESULT_RUNNING_OK;
 }
 
 /// The frame loop sets (or clears) what the hooks write into a hand's controller.
@@ -103,22 +136,13 @@ pub unsafe extern "C" fn lf_hook_pose(object_id: u32, pose: *mut DriverPose) {
                 h.pose_devices.push(object_id);
                 log!("device {object_id}: first pose through the hook (connected {}, valid {}, result {})", p.device_is_connected, p.pose_is_valid, p.result);
             }
-            if let Some(inj) = h.injections.iter().flatten().find(|inj| inj.object_id == object_id) {
-                // The injected pose is in world space; this driver's pose is in its own frame,
-                // world = world_from_driver * driver.
-                let wd_rotation = quat_f32(p.world_from_driver_rotation);
-                let wd_translation = vec_f32(p.world_from_driver_translation);
-                let rotation = (wd_rotation.inverse() * inj.rotation).normalize();
-                let position = wd_rotation.inverse() * (inj.position - wd_translation);
-                p.rotation = host::Quaternion { w: rotation.w as f64, x: rotation.x as f64, y: rotation.y as f64, z: rotation.z as f64 };
-                p.position = [position.x as f64, position.y as f64, position.z as f64];
-                p.velocity = [0.0; 3];
-                p.acceleration = [0.0; 3];
-                p.angular_velocity = [0.0; 3];
-                p.angular_acceleration = [0.0; 3];
-                p.pose_is_valid = true;
-                p.result = host::TRACKING_RESULT_RUNNING_OK;
-                h.injected_poses += 1;
+            let frame = (quat_f32(p.world_from_driver_rotation), vec_f32(p.world_from_driver_translation));
+            if let Some(hand) = h.object_ids.iter().position(|id| *id == Some(object_id)) {
+                h.frames[hand] = Some(frame);
+                if let Some(inj) = h.injections[hand] {
+                    write_pose(p, &inj, frame);
+                    h.injected_poses += 1;
+                }
             }
         });
     })

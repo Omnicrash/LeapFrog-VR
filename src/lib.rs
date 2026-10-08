@@ -53,6 +53,9 @@ struct State {
     /// Per hand: whether the Leap drives the controller right now, and which controller.
     leap_drives: [bool; 2],
     controller_ids: [Option<u32>; 2],
+    /// Hand orientation in the controller's frame while held (left hand; the right mirrors),
+    /// yaw/pitch/roll in degrees from the settings, re-read once a second.
+    grip_rotation_deg: Vec3,
     frame: u32,
     transitions: u32,
     debug_panic_pending: bool,
@@ -114,6 +117,11 @@ fn read_thresholds() -> Thresholds {
     }
 }
 
+/// The hand's orientation in the controller's frame while held, as set (left hand, degrees).
+fn read_grip_rotation() -> Vec3 {
+    Vec3::new(host::setting_float("gripYaw", 2.0), host::setting_float("gripPitch", -48.0), host::setting_float("gripRoll", 87.0))
+}
+
 fn read_offsets() -> Offsets {
     Offsets {
         position: Vec3::new(
@@ -161,6 +169,7 @@ pub extern "C" fn lf_init() -> i32 {
             passthrough: host::setting_bool("passthrough", false),
             leap_drives: [false, false],
             controller_ids: [None, None],
+            grip_rotation_deg: read_grip_rotation(),
             frame: 0,
             transitions: 0,
             debug_panic_pending: host::setting_bool("debugPanic", false),
@@ -236,6 +245,11 @@ impl State {
                 self.offsets = offsets;
                 log!("offsets changed: {offsets:?}");
             }
+            let grip_rotation = read_grip_rotation();
+            if grip_rotation != self.grip_rotation_deg {
+                self.grip_rotation_deg = grip_rotation;
+                log!("grip rotation changed: yaw {} pitch {} roll {} deg", grip_rotation.x, grip_rotation.y, grip_rotation.z);
+            }
             let room_setup = service::process_running("steamvr_room_setup.exe");
             if room_setup != self.room_setup {
                 self.room_setup = room_setup;
@@ -267,7 +281,7 @@ impl State {
             let controller_id = self.controllers.index(i as u32);
             if controller_id != self.controller_ids[i] {
                 self.controller_ids[i] = controller_id;
-                hooks::set_container(i, controller_id.map(|id| host::Properties::of(id).container()));
+                hooks::set_controller(i, controller_id, controller_id.map(|id| host::Properties::of(id).container()));
             }
             if self.frame % 900 == 0 {
                 if let Some(grip) = self.switches[i].grip() {
@@ -287,13 +301,25 @@ impl State {
                 let injection = if leap_drives {
                     controller_id.zip(hand.world_pose()).map(|(object_id, (hand_rotation, wrist))| {
                         // Where the controller would be, held with the hand where the Leap sees it.
-                        let rotation = (hand_rotation * switch.grip_rotation().inverse()).normalize();
+                        // The hand-to-controller rotation is a setting (left hand; mirrored for the
+                        // right); the learned one is only logged, it was off by ~90 deg (04:19).
+                        let d = self.grip_rotation_deg * (std::f32::consts::PI / 180.0);
+                        let (yaw, roll) = if i == 0 { (d.x, d.z) } else { (-d.x, -d.z) };
+                        let grip_rotation = glam::Quat::from_euler(glam::EulerRot::YXZ, yaw, d.y, roll);
+                        let rotation = (hand_rotation * grip_rotation.inverse()).normalize();
                         hooks::Injection { object_id, rotation, position: wrist - rotation * switch.grip_vector(), bones: *hand.bones() }
                     })
                 } else {
                     None
                 };
                 hooks::set_injection(i, injection);
+                // Lighthouse sends no poses for a controller it cannot see, which is the main
+                // case: send the injected pose ourselves, in the controller's own frame.
+                if let (Some(inj), Some(frame)) = (injection, hooks::driver_frame(i)) {
+                    let mut pose = host::DriverPose::disconnected();
+                    hooks::write_pose(&mut pose, &inj, frame);
+                    host::pose_updated(inj.object_id, &pose);
+                }
             } else {
                 hooks::set_injection(i, None);
             }
