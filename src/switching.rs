@@ -16,7 +16,7 @@ pub enum Driver {
     Leap,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Thresholds {
     pub away_m: f32,
     pub near_m: f32,
@@ -32,7 +32,7 @@ pub struct Thresholds {
 
 impl Default for Thresholds {
     fn default() -> Thresholds {
-        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 0.5, still_mps: 0.15, pickup_mps: 0.4, spacing_s: 2.0, dead_s: 3.0 }
+        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 0.2, still_mps: 0.3, pickup_mps: 0.4, spacing_s: 0.5, dead_s: 3.0 }
     }
 }
 
@@ -97,6 +97,11 @@ impl Switch {
     /// reference is [`GRIP_PRIOR`].
     pub fn grip(&self) -> Option<Vec3> {
         self.learned().then_some(self.grip)
+    }
+
+    /// New thresholds (live settings); the running timers keep going.
+    pub fn set_thresholds(&mut self, thresholds: Thresholds) {
+        self.thresholds = thresholds;
     }
 
     fn learned(&self) -> bool {
@@ -209,6 +214,11 @@ impl Switch {
 mod tests {
     use super::*;
 
+    /// The thresholds the tests were written against (the defaults before 2026-10-08).
+    fn classic() -> Thresholds {
+        Thresholds { away_m: 0.20, near_m: 0.15, away_s: 0.5, still_mps: 0.15, pickup_mps: 0.4, spacing_s: 2.0, dead_s: 3.0 }
+    }
+
     /// Where the wrist is while holding a controller at the origin, by the prior.
     const HELD: Vec3 = GRIP_PRIOR;
 
@@ -227,20 +237,20 @@ mod tests {
 
     #[test]
     fn controller_off_is_leap() {
-        let mut s = Switch::new(Thresholds::default());
+        let mut s = Switch::new(classic());
         assert_eq!(s.update(0.0, &obs(false, Vec3::ZERO, 0.0, None)), Driver::Leap);
         assert_eq!(s.update(0.1, &obs(true, Vec3::ZERO, 0.0, None)), Driver::Leap);
     }
 
     #[test]
     fn put_down_needs_distance_stillness_and_time() {
-        let mut s = Switch::new(Thresholds { away_s: 0.5, ..Thresholds::default() });
+        let mut s = Switch::new(Thresholds { away_s: 0.5, ..classic() });
         let far = Some(Vec3::new(0.5, 0.0, 0.0));
         assert_eq!(s.update(0.0, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Controller);
         assert_eq!(s.update(0.3, &obs(true, Vec3::ZERO, 0.0, far)), Driver::Controller);
         // A hand where it is when holding (the prior), or 20 cm off that (an unlearned grip
         // can be off by that much), is not away.
-        let mut held = Switch::new(Thresholds { away_s: 0.5, ..Thresholds::default() });
+        let mut held = Switch::new(Thresholds { away_s: 0.5, ..classic() });
         for (i, hand) in [HELD, HELD + Vec3::new(0.2, 0.0, 0.0)].iter().enumerate() {
             for j in 0..30 {
                 assert_eq!(held.update(i as f64 * 10.0 + j as f64 * 0.1, &obs(true, Vec3::ZERO, 0.0, Some(*hand))), Driver::Controller);
@@ -254,7 +264,7 @@ mod tests {
 
     #[test]
     fn hand_near_controller_stays_controller() {
-        let mut s = Switch::new(Thresholds::default());
+        let mut s = Switch::new(classic());
         let near = Some(HELD);
         for i in 0..20 {
             assert_eq!(s.update(i as f64 * 0.1, &obs(true, Vec3::ZERO, 0.0, near)), Driver::Controller);
@@ -263,7 +273,7 @@ mod tests {
 
     #[test]
     fn controller_found_on_is_in_use_until_put_down() {
-        let mut s = Switch::new(Thresholds::default());
+        let mut s = Switch::new(classic());
         let unknown = Observation::default();
         assert_eq!(s.update(0.0, &unknown), Driver::Leap);
         // Found, hand not seen anywhere: the controller is assumed in hand.
@@ -272,14 +282,14 @@ mod tests {
 
     #[test]
     fn hand_at_controller_picks_it_up() {
-        let mut s = Switch::new(Thresholds::default());
+        let mut s = Switch::new(classic());
         assert_eq!(s.update(0.0, &obs(false, Vec3::ZERO, 0.0, None)), Driver::Leap);
         assert_eq!(s.update(1.0, &obs(true, Vec3::ZERO, 0.0, Some(HELD))), Driver::Controller);
     }
 
     #[test]
     fn forced_controller_wins() {
-        let mut s = Switch::new(Thresholds::default());
+        let mut s = Switch::new(classic());
         let far = Some(Vec3::new(0.5, 0.0, 0.0));
         assert_eq!(s.update(0.0, &obs(false, Vec3::ZERO, 0.0, far)), Driver::Leap);
         let mut o = obs(true, Vec3::ZERO, 0.0, far);
@@ -290,7 +300,7 @@ mod tests {
 
     #[test]
     fn grip_is_learned_while_moving_and_used_for_distance() {
-        let mut s = Switch::new(Thresholds::default());
+        let mut s = Switch::new(classic());
         // Held and moving: wrist 25 cm "behind" the tracked origin, hand in view.
         let wrist = Some(Vec3::new(-0.25, 0.0, 0.0));
         for i in 0..GRIP_SAMPLES + 5 {
@@ -311,7 +321,7 @@ mod tests {
 
     #[test]
     fn grip_refines_only_near_itself() {
-        let mut s = Switch::new(Thresholds::default());
+        let mut s = Switch::new(classic());
         let wrist = Some(Vec3::new(-0.20, 0.0, 0.0));
         for i in 0..GRIP_SAMPLES + 5 {
             s.update(i as f64 * 0.02, &obs(true, Vec3::ZERO, 0.6, wrist));
@@ -341,17 +351,17 @@ mod tests {
         };
         // Controller driving, untracked for a long time, hand not seen: stays, whatever the
         // (noise) velocity says.
-        let mut s = Switch::new(Thresholds::default());
+        let mut s = Switch::new(classic());
         for i in 0..300 {
             assert_eq!(s.update(i as f64 * 0.1, &degraded(if i % 2 == 0 { 0.0 } else { 0.8 }, None, 0.0)), Driver::Controller);
         }
         // Hand seen, but the controller keeps turning (it is in a hand): stays.
-        let mut s = Switch::new(Thresholds::default());
+        let mut s = Switch::new(classic());
         for i in 0..300 {
             assert_eq!(s.update(i as f64 * 0.1, &degraded(0.0, far, 1.0)), Driver::Controller);
         }
         // Leap driving (controller was off), controller comes on untracked and still: stays Leap.
-        let mut s = Switch::new(Thresholds::default());
+        let mut s = Switch::new(classic());
         assert_eq!(s.update(0.0, &obs(false, Vec3::ZERO, 0.0, far)), Driver::Leap);
         for i in 1..300 {
             assert_eq!(s.update(i as f64 * 0.1, &degraded(0.8, far, 0.0)), Driver::Leap);
@@ -368,7 +378,7 @@ mod tests {
             o.controller_angular_velocity = Vec3::new(turn, 0.0, 0.0);
             o
         };
-        let mut s = Switch::new(Thresholds::default());
+        let mut s = Switch::new(classic());
         assert_eq!(s.update(0.0, &obs(true, Vec3::ZERO, 0.6, near)), Driver::Controller);
         // Put down out of sight at t=3: still, hand in view, but not for 3 s yet.
         for i in 0..29 {
@@ -386,7 +396,7 @@ mod tests {
         // Picked up: tracked again with the hand at it (spacing is long over).
         assert_eq!(s.update(20.0, &obs(true, Vec3::ZERO, 0.0, near)), Driver::Controller);
         // deadSpotTime 0 disables the rule.
-        let mut s = Switch::new(Thresholds { dead_s: 0.0, ..Thresholds::default() });
+        let mut s = Switch::new(Thresholds { dead_s: 0.0, ..classic() });
         s.update(0.0, &obs(true, Vec3::ZERO, 0.6, near));
         for i in 0..100 {
             assert_eq!(s.update(1.0 + i as f64 * 0.1, &dark(far, 0.0)), Driver::Controller);
@@ -395,7 +405,7 @@ mod tests {
 
     #[test]
     fn transitions_are_spaced_in_both_directions() {
-        let mut s = Switch::new(Thresholds::default());
+        let mut s = Switch::new(classic());
         let far = Some(Vec3::new(0.5, 0.0, 0.0));
         let near = Some(HELD);
         assert_eq!(s.update(0.0, &obs(false, Vec3::ZERO, 0.0, far)), Driver::Leap);
@@ -414,7 +424,7 @@ mod tests {
 
     #[test]
     fn pick_up_is_a_clear_move() {
-        let mut s = Switch::new(Thresholds::default());
+        let mut s = Switch::new(classic());
         assert_eq!(s.update(0.0, &obs(false, Vec3::ZERO, 0.0, None)), Driver::Leap);
         assert_eq!(s.update(1.0, &obs(true, Vec3::ZERO, 0.2, None)), Driver::Leap);
         assert_eq!(s.update(1.1, &obs(true, Vec3::ZERO, 0.6, None)), Driver::Controller);

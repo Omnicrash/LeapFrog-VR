@@ -46,6 +46,7 @@ struct State {
     leap: leap::Leap,
     poses: Vec<TrackedDevicePose>,
     switches: [Switch; 2],
+    thresholds: Thresholds,
     offsets: Offsets,
     pickup_enabled: bool,
     room_setup: bool,
@@ -107,14 +108,15 @@ fn tracking_hints() -> Option<String> {
 
 fn read_thresholds() -> Thresholds {
     let d = Thresholds::default();
+    let t = tune_overrides();
     Thresholds {
-        away_m: host::setting_float("awayDistance", d.away_m),
-        near_m: host::setting_float("nearDistance", d.near_m),
-        away_s: host::setting_float("awayTime", d.away_s),
-        still_mps: host::setting_float("stillSpeed", d.still_mps),
-        pickup_mps: host::setting_float("pickupSpeed", d.pickup_mps),
-        spacing_s: host::setting_float("switchSpacing", d.spacing_s),
-        dead_s: host::setting_float("deadSpotTime", d.dead_s),
+        away_m: tuned_float(&t, "awayDistance", d.away_m),
+        near_m: tuned_float(&t, "nearDistance", d.near_m),
+        away_s: tuned_float(&t, "awayTime", d.away_s),
+        still_mps: tuned_float(&t, "stillSpeed", d.still_mps),
+        pickup_mps: tuned_float(&t, "pickupSpeed", d.pickup_mps),
+        spacing_s: tuned_float(&t, "switchSpacing", d.spacing_s),
+        dead_s: tuned_float(&t, "deadSpotTime", d.dead_s),
     }
 }
 
@@ -183,6 +185,7 @@ pub extern "C" fn lf_init() -> i32 {
             }),
             poses: vec![TrackedDevicePose::default(); host::MAX_TRACKED_DEVICE_COUNT],
             switches: [Switch::new(thresholds), Switch::new(thresholds)],
+            thresholds,
             offsets,
             pickup_enabled: host::setting_bool("pickupSwitching", true),
             room_setup: false,
@@ -264,6 +267,14 @@ impl State {
             if offsets != self.offsets {
                 self.offsets = offsets;
                 log!("offsets changed: {offsets:?}");
+            }
+            let thresholds = read_thresholds();
+            if thresholds != self.thresholds {
+                self.thresholds = thresholds;
+                for switch in &mut self.switches {
+                    switch.set_thresholds(thresholds);
+                }
+                log!("switching thresholds changed: {thresholds:?}");
             }
             let room_setup = service::process_running("steamvr_room_setup.exe");
             if room_setup != self.room_setup {
