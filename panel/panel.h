@@ -37,6 +37,7 @@ void* lfp_interface(const char* version, char* err, size_t err_len);
 int lfp_app_installed(const char* key);
 int lfp_app_register(const char* manifest, const char* key, char* err, size_t err_len);
 int lfp_app_unregister(const char* manifest, char* err, size_t err_len);
+int lfp_app_launch(const char* key, char* err, size_t err_len);
 
 // 1 once the given process has ended (or cannot be opened).
 int lfp_process_gone(unsigned pid);

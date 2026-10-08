@@ -3,9 +3,9 @@
 //! `leapfrog-panel overlay [pid]` runs the dashboard tab until SteamVR quits (or the given
 //! process ends). SteamVR starts it as a registered overlay app ("Choose Startup Overlay Apps"),
 //! and `leapfrog-panel ensure <pid>`, run by the driver at every start, does the one-time
-//! registration: not registered yet -> register with autolaunch and run the tab for this session;
+//! registration: not registered yet -> register with autolaunch and have SteamVR launch it now;
 //! registered -> exit, SteamVR's list decides. `unregister` is for the uninstaller. The log is
-//! `leapfrog-panel.log` next to the exe.
+//! `leapfrog-panel.log` next to the exe, one block per run.
 //!
 //! `leapfrog-panel set <key> <value>` writes one setting from a terminal (`get <key>` reads it
 //! back). The value's shape picks the type: `true`/`false`, an integer, a float, else a string.
@@ -37,6 +37,7 @@ mod ffi {
         pub fn lfp_app_installed(key: *const c_char) -> c_int;
         pub fn lfp_app_register(manifest: *const c_char, key: *const c_char, err: *mut c_char, err_len: usize) -> c_int;
         pub fn lfp_app_unregister(manifest: *const c_char, err: *mut c_char, err_len: usize) -> c_int;
+        pub fn lfp_app_launch(key: *const c_char, err: *mut c_char, err_len: usize) -> c_int;
     }
 }
 
@@ -61,18 +62,25 @@ fn main() {
 
 /// The dashboard tab. Connecting is retried for two minutes: the driver spawns the panel while
 /// SteamVR is still coming up, and an overlay app can only init once the compositor is there.
-/// With `ensure`, a registered app exits here and leaves the launch to SteamVR.
+/// With `ensure`, the launch itself is SteamVR's: this process only registers when needed.
 fn overlay(parent: u32, ensure: bool) -> i32 {
     let exe = std::env::current_exe().ok();
     let dir = exe.as_deref().and_then(|p| p.parent()).map(|p| p.to_path_buf()).unwrap_or_default();
-    let mut log = std::fs::File::create(dir.join("leapfrog-panel.log")).ok();
-    let mut note = |line: String| {
+    let path = dir.join("leapfrog-panel.log");
+    // Several instances per session write here (ensure, SteamVR's launch): append, one block each.
+    if std::fs::metadata(&path).map(|m| m.len() > 64 * 1024).unwrap_or(false) {
+        let _ = std::fs::remove_file(&path);
+    }
+    let mut log = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok();
+    let tag = if ensure { "ensure" } else { "overlay" };
+    let mut note = move |line: String| {
         use std::io::Write;
         if let Some(f) = log.as_mut() {
-            let _ = writeln!(f, "{line}");
+            let _ = writeln!(f, "[{tag} {}] {line}", std::process::id());
             let _ = f.flush();
         }
     };
+    note(String::from("started"));
     let started = std::time::Instant::now();
     loop {
         match connect(true) {
@@ -101,9 +109,20 @@ fn overlay(parent: u32, ensure: bool) -> i32 {
             return 0;
         }
         match register(&dir) {
-            Ok(path) => note(format!("registered {path} as a startup overlay app; running the tab for this session")),
-            Err(e) => note(format!("registration failed, running the tab for this session: {e}")),
+            Ok(path) => note(format!("registered {path} as a startup overlay app")),
+            Err(e) => note(format!("registration failed: {e}")),
         }
+        // SteamVR launches a freshly registered autolaunch app by itself; this covers the case it
+        // does not, and reports AlreadyRunning as success.
+        let mut err = vec![0 as c_char; 256];
+        // SAFETY: NUL-terminated key, error buffer of the given length.
+        if unsafe { ffi::lfp_app_launch(key.as_ptr(), err.as_mut_ptr(), err.len()) } == 0 {
+            note("launch requested from SteamVR".to_string());
+            unsafe { ffi::lfp_disconnect() };
+            return 0;
+        }
+        // SAFETY: the C side wrote a NUL-terminated string.
+        note(format!("SteamVR would not launch it ({}): running the tab from here", unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy()));
     }
     let thumb = dir.join("..").join("..").join("resources").join("icons").join("right_hand_status_ready.png");
     let thumb_c = CString::new(thumb.to_string_lossy().as_bytes()).unwrap_or_default();

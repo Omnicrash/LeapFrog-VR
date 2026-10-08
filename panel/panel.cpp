@@ -172,3 +172,17 @@ extern "C" int lfp_app_unregister(const char* manifest, char* err, size_t err_le
     }
     return 0;
 }
+
+// Asks SteamVR to launch the registered app (0 also when it already runs).
+extern "C" int lfp_app_launch(const char* key, char* err, size_t err_len) {
+    auto apps = static_cast<vr::IVRApplications*>(lfp_interface(vr::IVRApplications_Version, err, err_len));
+    if (!apps) {
+        return 1;
+    }
+    vr::EVRApplicationError e = apps->LaunchDashboardOverlay(key);
+    if (e != vr::VRApplicationError_None && e != vr::VRApplicationError_ApplicationAlreadyRunning) {
+        snprintf(err, err_len, "%s", apps->GetApplicationsErrorNameFromEnum(e));
+        return 1;
+    }
+    return 0;
+}
