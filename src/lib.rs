@@ -122,19 +122,39 @@ fn read_thresholds() -> Thresholds {
     }
 }
 
+/// Live overrides from `tune.txt` next to the driver DLL (`key=value` per line, the setting
+/// names), read once a second: SteamVR does not reload steamvr.vrsettings while it runs, so
+/// tuning by eye goes through this file (tools: D:\\tmp\\leapfrog\\offsettune.ps1). Absent = no overrides.
+fn tune_overrides() -> Vec<(String, f32)> {
+    let Some(dir) = service::own_directory() else { return Vec::new() };
+    let Ok(text) = std::fs::read_to_string(dir.join("tune.txt")) else { return Vec::new() };
+    text.lines()
+        .filter_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            Some((key.trim().to_string(), value.trim().parse::<f32>().ok()?))
+        })
+        .collect()
+}
+
+/// A float setting, with a `tune.txt` override when present.
+fn tuned_float(overrides: &[(String, f32)], key: &str, fallback: f32) -> f32 {
+    overrides.iter().find(|(k, _)| k == key).map(|(_, v)| *v).unwrap_or_else(|| host::setting_float(key, fallback))
+}
+
 fn read_offsets() -> Offsets {
+    let t = tune_overrides();
     Offsets {
         position: Vec3::new(
-            host::setting_float("handOffsetX", 0.0),
-            host::setting_float("handOffsetY", 0.0),
-            host::setting_float("handOffsetZ", -0.01),
+            tuned_float(&t, "handOffsetX", 0.0),
+            tuned_float(&t, "handOffsetY", 0.0),
+            tuned_float(&t, "handOffsetZ", -0.01),
         ),
         rotation_degrees: Vec3::new(
-            host::setting_float("rotationOffsetX", 0.0),
-            host::setting_float("rotationOffsetY", 0.0),
-            host::setting_float("rotationOffsetZ", 0.0),
+            tuned_float(&t, "rotationOffsetX", 0.0),
+            tuned_float(&t, "rotationOffsetY", 0.0),
+            tuned_float(&t, "rotationOffsetZ", 0.0),
         ),
-        inward: host::setting_float("handInwardOffset", 0.01),
+        inward: tuned_float(&t, "handInwardOffset", 0.01),
     }
 }
 
@@ -249,7 +269,7 @@ impl State {
                 self.offsets = offsets;
                 log!("offsets changed: {offsets:?}");
             }
-            let alternate = host::setting_float("debugAlternate", 0.0);
+            let alternate = tuned_float(&tune_overrides(), "debugAlternate", 0.0);
             if alternate != self.debug_alternate_s {
                 self.debug_alternate_s = alternate;
                 log!("debugAlternate {}", if alternate > 0.0 { format!("every {alternate} s") } else { "off".to_string() });

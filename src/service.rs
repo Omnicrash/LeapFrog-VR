@@ -202,6 +202,10 @@ mod win {
     pub fn process_running(_name: &str) -> bool {
         false
     }
+
+    pub fn own_directory() -> Option<std::path::PathBuf> {
+        None
+    }
 }
 
 #[cfg_attr(feature = "host-stubs", allow(dead_code))]
@@ -234,4 +238,9 @@ fn report(what: &str, result: Result<bool, u32>) {
 
 pub fn process_running(name: &str) -> bool {
     win::process_running(name)
+}
+
+/// The folder the driver DLL was loaded from (bin/win64), None on the build host.
+pub fn own_directory() -> Option<std::path::PathBuf> {
+    win::own_directory()
 }
