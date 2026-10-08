@@ -23,6 +23,8 @@ pub struct Injection {
     pub rotation: Quat,
     pub position: Vec3,
     pub bones: [BoneTransform; BONE_COUNT],
+    /// Keep the controller's own root and wrist bones (held placement) or replace all 31.
+    pub fingers_only: bool,
 }
 
 static HOOKS: Mutex<Hooks> = Mutex::new(Hooks::new());
@@ -235,7 +237,8 @@ pub unsafe extern "C" fn lf_hook_skeleton_update(handle: u64, motion_range: i32,
                 if count as usize == BONE_COUNT {
                     // SAFETY: `count` bones per the caller's contract.
                     let out = unsafe { std::slice::from_raw_parts_mut(bones, count as usize) };
-                    out.copy_from_slice(&inj.bones);
+                    let from = if inj.fingers_only { 2 } else { 0 };
+                    out[from..].copy_from_slice(&inj.bones[from..]);
                 }
             }
         });

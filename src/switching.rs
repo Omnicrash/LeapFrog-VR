@@ -53,8 +53,6 @@ pub struct Observation {
     /// From the gyro, so it holds up without optical tracking (rad/s).
     pub controller_angular_velocity: Vec3,
     pub hand_position: Option<Vec3>,
-    /// The Leap hand's orientation in world space, when seen (for the grip rotation).
-    pub hand_rotation: Option<Quat>,
 }
 
 #[derive(Debug)]
@@ -68,8 +66,6 @@ pub struct Switch {
     locked_until: f64,
     /// Wrist position in the controller's frame while held, and how many samples went in.
     grip: Vec3,
-    /// Hand orientation in the controller's frame while held, learned with `grip`.
-    grip_rotation: Quat,
     grip_samples: u32,
     thresholds: Thresholds,
     /// Which rule set the current state, for the log.
@@ -85,7 +81,7 @@ const GRIP_SAMPLES: u32 = 45;
 /// sessions (within a few cm of this each time: 0.20-0.24 m from the tracked origin, mostly
 /// forward). The reference until the grip is learned; before this prior the origin was the
 /// reference and a held hand measured 0.22-0.25 m "away" (2026-10-08, 03:38).
-const GRIP_PRIOR: Vec3 = Vec3::new(0.0, 0.07, 0.21);
+pub const GRIP_PRIOR: Vec3 = Vec3::new(0.0, 0.07, 0.21);
 
 /// The away threshold while the grip is still the prior, which may be off by a hand's width.
 const AWAY_UNLEARNED_M: f32 = 0.35;
@@ -96,7 +92,7 @@ const DEAD_TURN_RPS: f32 = 0.3;
 
 impl Switch {
     pub fn new(thresholds: Thresholds) -> Switch {
-        Switch { state: Driver::Controller, away_since: None, dark_since: None, controller_known: false, locked_until: 0.0, grip: GRIP_PRIOR, grip_rotation: Quat::IDENTITY, grip_samples: 0, thresholds, reason: "start", last_distance: None }
+        Switch { state: Driver::Controller, away_since: None, dark_since: None, controller_known: false, locked_until: 0.0, grip: GRIP_PRIOR, grip_samples: 0, thresholds, reason: "start", last_distance: None }
     }
 
     /// The learned grip point (wrist in the controller frame) once trusted; before that the
@@ -107,16 +103,6 @@ impl Switch {
 
     fn learned(&self) -> bool {
         self.grip_samples >= GRIP_SAMPLES
-    }
-
-    /// The grip reference in use: learned, or the prior.
-    pub fn grip_vector(&self) -> Vec3 {
-        self.grip
-    }
-
-    /// Hand orientation in the controller's frame while held (identity until learned).
-    pub fn grip_rotation(&self) -> Quat {
-        self.grip_rotation
     }
 
     /// Why the state is what it is (the rule that set it last).
@@ -192,20 +178,12 @@ impl Switch {
             // Learn the grip while the controller drives and clearly moves with the hand in view:
             // quickly in the first second, then slowly and only near the point already known.
             if self.state == Driver::Controller && speed > 0.5 {
-                let relative = o.hand_rotation.map(|r| (o.controller_rotation.inverse() * r).normalize());
                 if !self.learned() && local.length() < 0.3 {
                     // The first sample replaces the prior; the rest average in.
-                    let weight = 1.0 / (self.grip_samples as f32 + 1.0);
-                    self.grip = self.grip.lerp(local, weight);
-                    if let Some(r) = relative {
-                        self.grip_rotation = self.grip_rotation.slerp(r, weight).normalize();
-                    }
+                    self.grip = self.grip.lerp(local, 1.0 / (self.grip_samples as f32 + 1.0));
                     self.grip_samples += 1;
                 } else if self.learned() && local.distance(self.grip) < 0.25 {
                     self.grip = self.grip.lerp(local, 0.02);
-                    if let Some(r) = relative {
-                        self.grip_rotation = self.grip_rotation.slerp(r, 0.02).normalize();
-                    }
                 }
             }
             hand.distance(controller + o.controller_rotation * self.grip)
@@ -254,7 +232,6 @@ mod tests {
             controller_velocity: Vec3::new(speed, 0.0, 0.0),
             controller_angular_velocity: Vec3::ZERO,
             hand_position: hand,
-            hand_rotation: None,
         }
     }
 
