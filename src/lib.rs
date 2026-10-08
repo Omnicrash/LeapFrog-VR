@@ -337,7 +337,9 @@ impl State {
                 if let (Some(inj), Some(frame)) = (injection, hooks::driver_frame(i)) {
                     let mut pose = host::DriverPose::disconnected();
                     hooks::write_pose(&mut pose, &inj, frame);
-                    host::pose_updated(inj.object_id, &pose);
+                    if !host::pose_updated_as(inj.object_id, &pose) && self.frame % 90 == 0 {
+                        log!("{} hand: no host object known for controller {} yet, own pose not sent", hand.side(), inj.object_id);
+                    }
                     // Self-check, once a second: what SteamVR reports for the controller (this
                     // frame's raw pose) against what was injected last frame. Faithful = a few
                     // mm and degrees; anything else is our math or frame.

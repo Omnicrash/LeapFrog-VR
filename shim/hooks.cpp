@@ -83,9 +83,17 @@ bool patch(Patched& p, size_t slot, void* replacement)
     return true;
 }
 
+// The host object each device's own driver sends its poses through: vrserver attributes a pose
+// update to the calling driver, so poses LeapFrog sends for a lighthouse device through its own
+// host object are dropped (2026-10-08, 04:59). Sending through the owner's object lands.
+void* g_host_self[k_unMaxTrackedDeviceCount];
+
 // IVRServerDriverHost_006, slot 1
 void hook_pose_updated(void* self, uint32_t device, const DriverPose_t& pose, uint32_t size)
 {
+    if (device < k_unMaxTrackedDeviceCount && t_own_calls == 0) {
+        g_host_self[device] = self;
+    }
     Patched* p = find(self);
     auto orig = reinterpret_cast<void (*)(void*, uint32_t, const DriverPose_t&, uint32_t)>(p ? p->original[1] : nullptr);
     if (!orig) {
@@ -219,6 +227,21 @@ void* hook_get_generic_interface(void* self, const char* name, EVRInitError* err
 }
 
 } // namespace
+
+extern "C" bool lfh_pose_updated_as(uint32_t object_id, const void* driver_pose)
+{
+    if (object_id >= k_unMaxTrackedDeviceCount || !g_host_self[object_id]) {
+        return false;
+    }
+    void* self = g_host_self[object_id];
+    Patched* p = find(self);
+    auto orig = reinterpret_cast<void (*)(void*, uint32_t, const DriverPose_t&, uint32_t)>(p ? p->original[1] : nullptr);
+    if (!orig) {
+        return false;
+    }
+    orig(self, object_id, *static_cast<const DriverPose_t*>(driver_pose), sizeof(DriverPose_t));
+    return true;
+}
 
 namespace lf_hooks {
 

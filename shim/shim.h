@@ -31,6 +31,8 @@ void lfh_layout(uint32_t* driver_pose, uint32_t* tracked_pose, uint32_t* bone_tr
 void lfh_log(const char* msg);
 bool lfh_tracked_device_added(const char* serial, int32_t device_class, uint32_t hand);
 void lfh_pose_updated(uint32_t object_id, const void* driver_pose);
+// LF-6: a pose for another driver's device, sent through that driver's own host object (hooks.cpp).
+bool lfh_pose_updated_as(uint32_t object_id, const void* driver_pose);
 void lfh_get_raw_poses(float predicted_seconds, void* tracked_poses, uint32_t count);
 uint64_t lfh_prop_container(uint32_t object_id);
 int32_t lfh_set_prop_string(uint64_t container, int32_t prop, const char* value);

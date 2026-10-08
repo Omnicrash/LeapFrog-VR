@@ -158,6 +158,7 @@ pub mod ffi {
         pub fn lfh_log(msg: *const c_char);
         pub fn lfh_tracked_device_added(serial: *const c_char, device_class: i32, hand: u32) -> bool;
         pub fn lfh_pose_updated(object_id: u32, driver_pose: *const c_void);
+        pub fn lfh_pose_updated_as(object_id: u32, driver_pose: *const c_void) -> bool;
         pub fn lfh_get_raw_poses(predicted_seconds: f32, tracked_poses: *mut c_void, count: u32);
         pub fn lfh_prop_container(object_id: u32) -> u64;
         pub fn lfh_set_prop_string(container: u64, prop: i32, value: *const c_char) -> i32;
@@ -190,6 +191,7 @@ pub mod ffi {
     }
     pub unsafe fn lfh_tracked_device_added(_: *const c_char, _: i32, _: u32) -> bool { true }
     pub unsafe fn lfh_pose_updated(_: u32, _: *const c_void) {}
+    pub unsafe fn lfh_pose_updated_as(_: u32, _: *const c_void) -> bool { false }
     pub unsafe fn lfh_get_raw_poses(_: f32, _: *mut c_void, _: u32) {}
     pub unsafe fn lfh_prop_container(_: u32) -> u64 { 0 }
     pub unsafe fn lfh_set_prop_string(_: u64, _: i32, _: *const c_char) -> i32 { 0 }
@@ -235,6 +237,13 @@ pub fn tracked_device_added(serial: &str, device_class: i32, hand: u32) -> bool 
 pub fn pose_updated(object_id: u32, pose: &DriverPose) {
     // SAFETY: DriverPose mirrors vr::DriverPose_t (checked by layout_matches at init).
     unsafe { ffi::lfh_pose_updated(object_id, pose as *const DriverPose as *const _) };
+}
+
+/// A pose for another driver's device, through that driver's own host object; false when the
+/// hooks have not seen that device's owner yet.
+pub fn pose_updated_as(object_id: u32, pose: &DriverPose) -> bool {
+    // SAFETY: the pose outlives the call; the shim copies it.
+    unsafe { ffi::lfh_pose_updated_as(object_id, pose as *const DriverPose as *const _) }
 }
 
 pub fn raw_poses(predicted_seconds: f32, poses: &mut [TrackedDevicePose]) {
