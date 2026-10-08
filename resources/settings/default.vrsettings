@@ -23,6 +23,6 @@
     "stillSpeed": 0.3,
     "pickupSpeed": 0.4,
     "switchSpacing": 0.5,
-    "deadSpotTime": 3.0
+    "deadSpotTime": 1.0
   }
 }
