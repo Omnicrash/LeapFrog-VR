@@ -255,20 +255,25 @@ impl State {
             // While the Leap drives a controller (passthrough), the pose SteamVR reports for it
             // is ours, so the switching takes the real one from the hook instead; without it the
             // injected pose fed the pick-up rule and the hands flickered every 2 s (04:44).
-            let real = (self.passthrough && self.leap_drives[i]).then(|| hooks::real_pose(i)).flatten()
-                .filter(|r| now - r.at_us < 100_000);
+            // A real pose older than 0.1 s means lighthouse is blind to the controller: then it
+            // is "unseen" (no position, no motion), never the reported pose, which is ours
+            // (04:53: the fallback to it brought the flicker back on an occluded controller).
+            let real = (self.passthrough && self.leap_drives[i]).then(|| hooks::real_pose(i)).flatten();
             let observation = match real {
-                Some(r) => Observation {
-                    force_controller,
-                    controller_known: controller.is_some(),
-                    controller_on: r.connected,
-                    controller_position: (r.valid && r.result == host::TRACKING_RESULT_RUNNING_OK).then_some(r.position),
-                    controller_rotation: r.rotation,
-                    controller_velocity: Vec3::new(r.speed, 0.0, 0.0),
-                    controller_angular_velocity: Vec3::new(r.angular_speed, 0.0, 0.0),
-                    hand_position,
-                    hand_rotation: hand.world_pose().map(|(r, _)| r),
-                },
+                Some(r) => {
+                    let fresh = now - r.at_us < 100_000;
+                    Observation {
+                        force_controller,
+                        controller_known: controller.is_some(),
+                        controller_on: r.connected,
+                        controller_position: (fresh && r.valid && r.result == host::TRACKING_RESULT_RUNNING_OK).then_some(r.position),
+                        controller_rotation: r.rotation,
+                        controller_velocity: if fresh { Vec3::new(r.speed, 0.0, 0.0) } else { Vec3::ZERO },
+                        controller_angular_velocity: if fresh { Vec3::new(r.angular_speed, 0.0, 0.0) } else { Vec3::ZERO },
+                        hand_position,
+                        hand_rotation: hand.world_pose().map(|(r, _)| r),
+                    }
+                }
                 None => Observation {
                     force_controller,
                     controller_known: controller.is_some(),
