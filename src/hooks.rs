@@ -164,10 +164,14 @@ pub unsafe extern "C" fn lf_hook_pose(object_id: u32, pose: *mut DriverPose) {
 #[no_mangle]
 pub unsafe extern "C" fn lf_hook_skeleton_create(container: u64, name: *const std::os::raw::c_char, skeleton_path: *const std::os::raw::c_char, tracking_level: i32) -> i32 {
     guard("hook_skeleton_create", tracking_level, || {
-        // Other drivers' skeletons register as Full: that is what makes VRChat treat the Index
-        // controllers as hand tracking (doc/Passthrough.md, step 2).
-        log!("skeleton {} ({}) on container {container}: level {tracking_level} requested, Full registered", c_str(name), c_str(skeleton_path));
-        crate::host::SKELETAL_TRACKING_FULL
+        // handTracking (read now, when the controller activates: the level is fixed from here
+        // on): Full makes VRChat treat the Index controllers as hand tracking (pinch controls
+        // with the controller down, but its pointer comes from the hand and the menu from a
+        // gesture); the driver's own level (Partial) keeps VRChat in controller mode, with the
+        // fingers still animated from the skeleton (doc/Passthrough.md, step 2 and 2026-10-08).
+        let level = if host::setting_bool("handTracking", true) { crate::host::SKELETAL_TRACKING_FULL } else { tracking_level };
+        log!("skeleton {} ({}) on container {container}: level {tracking_level} requested, {} registered", c_str(name), c_str(skeleton_path), if level == crate::host::SKELETAL_TRACKING_FULL { "Full (handTracking)" } else { "as requested" });
+        level
     })
 }
 
