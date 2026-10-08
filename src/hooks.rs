@@ -46,9 +46,6 @@ struct Hooks {
     /// Each controller's last pose as lighthouse sent it, before any rewrite (the real one).
     real: [Option<RealPose>; 2],
     injections: [Option<Injection>; 2],
-    /// Per hand, while the controller drives: root and wrist bones that put VRChat's hand at
-    /// the Leap's wrist (held placement), written over the controller's own.
-    held_bones: [Option<[BoneTransform; 2]>; 2],
     injected_poses: u64,
     /// Bone updates seen per hand since the last `take_bone_updates`.
     bone_updates: [u32; 2],
@@ -81,7 +78,6 @@ impl Hooks {
             frames: [None, None],
             real: [None, None],
             injections: [None, None],
-            held_bones: [None, None],
             injected_poses: 0,
             bone_updates: [0, 0],
         }
@@ -135,11 +131,6 @@ pub fn write_pose(p: &mut DriverPose, inj: &Injection, frame: (Quat, Vec3)) {
 /// The frame loop sets (or clears) what the hooks write into a hand's controller.
 pub fn set_injection(hand: usize, injection: Option<Injection>) {
     with_hooks(|h| h.injections[hand] = injection);
-}
-
-/// The frame loop sets (or clears) the root and wrist bones for a held controller.
-pub fn set_held_bones(hand: usize, bones: Option<[BoneTransform; 2]>) {
-    with_hooks(|h| h.held_bones[hand] = bones);
 }
 
 /// Bone updates the controller's own driver sent for this hand since the last call.
@@ -259,8 +250,6 @@ pub unsafe extern "C" fn lf_hook_skeleton_update(handle: u64, motion_range: i32,
                 if let Some(inj) = h.injections[hand].as_ref() {
                     let from = if inj.fingers_only { 2 } else { 0 };
                     out[from..].copy_from_slice(&inj.bones[from..]);
-                } else if let Some(held) = h.held_bones[hand] {
-                    out[..2].copy_from_slice(&held);
                 }
             }
         });

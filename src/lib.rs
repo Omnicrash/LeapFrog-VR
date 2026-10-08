@@ -63,7 +63,8 @@ struct State {
     /// kept while it is not; and the last wrist bone.
     held_placement: bool,
     held_relation: [(Vec3, glam::Quat); 2],
-    held_wrist: [host::BoneTransform; 2],
+    /// The last bones the Leap produced per hand, for frames it does not see the hand.
+    last_bones: [[host::BoneTransform; math::BONE_COUNT]; 2],
 
     frame: u32,
     transitions: u32,
@@ -176,7 +177,7 @@ pub extern "C" fn lf_init() -> i32 {
             controller_ids: [None, None],
             held_placement: host::setting_bool("heldPlacement", true),
             held_relation: [(switching::GRIP_PRIOR, glam::Quat::IDENTITY); 2],
-            held_wrist: [math::open_hand(true)[math::WRIST], math::open_hand(false)[math::WRIST]],
+            last_bones: [math::open_hand(true), math::open_hand(false)],
             frame: 0,
             transitions: 0,
             debug_panic_pending: host::setting_bool("debugPanic", false),
@@ -269,7 +270,7 @@ impl State {
             // A real pose older than 0.1 s means lighthouse is blind to the controller: then it
             // is "unseen" (no position, no motion), never the reported pose, which is ours
             // (04:53: the fallback to it brought the flicker back on an occluded controller).
-            let real = (self.passthrough && self.leap_drives[i]).then(|| hooks::real_pose(i)).flatten();
+            let real = self.passthrough.then(|| hooks::real_pose(i)).flatten();
             let observation = match real {
                 Some(r) => {
                     let fresh = now - r.at_us < 100_000;
@@ -300,15 +301,6 @@ impl State {
                     hand_position,
                 },
             };
-            // Self-check of the real-pose composition, once a second while the controller drives:
-            // hook-composed against SteamVR-reported; must be ~0 or the composition order is wrong.
-            if self.passthrough && !self.leap_drives[i] && self.frame % 90 == 30 {
-                if let (Some(r), Some(c)) = (hooks::real_pose(i).filter(|r| r.valid), controller.filter(|c| c.pose_is_valid)) {
-                    let reported = math::Head::from_pose(c);
-                    log!("{} real-pose check: hook composition {:.1} cm and {:.0} deg from SteamVR's report", hand.side(),
-                        (reported.translation - r.position).length() * 100.0, reported.rotation.angle_between(r.rotation).to_degrees());
-                }
-            }
             let driver = self.switches[i].update(now_s, &observation);
             let controller_id = self.controllers.index(i as u32);
             if controller_id != self.controller_ids[i] {
@@ -332,25 +324,14 @@ impl State {
             if composite {
                 // Held placement: while the controller drives and is tracked, measure where the
                 // Leap pose sits in the controller's frame (hand within 12 cm of the grip
-                // reference), and rewrite the controller's root and wrist bones so the hand
-                // frame is controller * relation * wrist = the Leap device's own hand frame.
-                let tracked = controller.filter(|c| c.pose_is_valid && c.tracking_result == host::TRACKING_RESULT_RUNNING_OK);
-                if !leap_drives && self.held_placement && tracked.is_some() {
-                    if let (Some(c), Some((hand_rotation, wrist))) = (tracked, hand.world_pose()) {
-                        if self.switches[i].last_distance().is_some_and(|d| d < 0.12) {
-                            let real = math::Head::from_pose(c);
-                            let local_pos = real.rotation.inverse() * (wrist - real.translation);
-                            let local_rot = (real.rotation.inverse() * hand_rotation).normalize();
-                            let (p, r) = self.held_relation[i];
-                            self.held_relation[i] = (p.lerp(local_pos, 0.1), r.slerp(local_rot, 0.1).normalize());
-                            self.held_wrist[i] = hand.bones()[math::WRIST];
-                        }
-                    }
-                    let (p, r) = self.held_relation[i];
-                    let root = host::BoneTransform { position: [p.x, p.y, p.z, 1.0], orientation: host::Quaternionf { w: r.w, x: r.x, y: r.y, z: r.z } };
-                    hooks::set_held_bones(i, Some([root, self.held_wrist[i]]));
-                } else {
-                    hooks::set_held_bones(i, None);
+                // reference; kept while the hand is unseen) and report the controller at
+                // controller * relation with the Leap's bones: the same hand frame as Leap mode,
+                // with lighthouse's tracking. Pose plus our bones is the one placement VRChat
+                // has shown right (05:00); rewriting the controller's root and wrist bones
+                // instead put the held hand somewhere else (05:40).
+                let real = hooks::real_pose(i).filter(|r| now - r.at_us < 100_000 && r.valid && r.result == host::TRACKING_RESULT_RUNNING_OK);
+                if let Some((_, _)) = hand.world_pose() {
+                    self.last_bones[i] = *hand.bones();
                 }
                 let injection = if leap_drives {
                     // The Leap hand device's own pose and full skeleton (04:55): the controller
@@ -358,13 +339,26 @@ impl State {
                     controller_id.zip(hand.world_pose()).map(|(object_id, (hand_rotation, wrist))| {
                         hooks::Injection { object_id, rotation: hand_rotation, position: wrist, bones: *hand.bones(), fingers_only: false }
                     })
+                } else if self.held_placement {
+                    if let (Some(r), Some((hand_rotation, wrist))) = (real, hand.world_pose()) {
+                        if self.switches[i].last_distance().is_some_and(|d| d < 0.12) {
+                            let local_pos = r.rotation.inverse() * (wrist - r.position);
+                            let local_rot = (r.rotation.inverse() * hand_rotation).normalize();
+                            let (p, q) = self.held_relation[i];
+                            self.held_relation[i] = (p.lerp(local_pos, 0.1), q.slerp(local_rot, 0.1).normalize());
+                        }
+                    }
+                    controller_id.zip(real).map(|(object_id, r)| {
+                        let (p, q) = self.held_relation[i];
+                        hooks::Injection { object_id, rotation: (r.rotation * q).normalize(), position: r.position + r.rotation * p, bones: self.last_bones[i], fingers_only: false }
+                    })
                 } else {
                     None
                 };
                 hooks::set_injection(i, injection);
                 // Lighthouse sends no poses for a controller it cannot see, which is the main
                 // case: send the injected pose ourselves, in the controller's own frame.
-                if let (Some(inj), Some(frame)) = (injection, hooks::driver_frame(i)) {
+                if let (Some(inj), Some(frame), true) = (injection, hooks::driver_frame(i), leap_drives) {
                     let mut pose = host::DriverPose::disconnected();
                     hooks::write_pose(&mut pose, &inj, frame);
                     if !host::pose_updated_as(inj.object_id, &pose) && self.frame % 90 == 0 {
@@ -391,7 +385,6 @@ impl State {
                 }
             } else {
                 hooks::set_injection(i, None);
-                hooks::set_held_bones(i, None);
             }
             if leap_drives != self.leap_drives[i] {
                 self.leap_drives[i] = leap_drives;
