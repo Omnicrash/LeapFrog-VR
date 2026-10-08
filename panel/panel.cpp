@@ -17,6 +17,8 @@ const char* const SECTION = "driver_leapfrog";
 HMODULE g_api;
 vr::IVRSettings* g_settings;
 void (*g_shutdown)();
+void* (*g_iface)(const char*, vr::EVRInitError*);
+const char* (*g_describe)(vr::EVRInitError);
 
 template <typename T>
 T proc(const char* name) {
@@ -32,26 +34,34 @@ extern "C" int lfp_connect(const wchar_t* dll, int overlay, char* err, size_t er
         return 1;
     }
     auto init = proc<uint32_t (*)(vr::EVRInitError*, vr::EVRApplicationType, const char*)>("VR_InitInternal2");
-    auto iface = proc<void* (*)(const char*, vr::EVRInitError*)>("VR_GetGenericInterface");
-    auto describe = proc<const char* (*)(vr::EVRInitError)>("VR_GetVRInitErrorAsEnglishDescription");
+    g_iface = proc<void* (*)(const char*, vr::EVRInitError*)>("VR_GetGenericInterface");
+    g_describe = proc<const char* (*)(vr::EVRInitError)>("VR_GetVRInitErrorAsEnglishDescription");
     g_shutdown = proc<void (*)()>("VR_ShutdownInternal");
-    if (!init || !iface || !describe || !g_shutdown) {
+    if (!init || !g_iface || !g_describe || !g_shutdown) {
         snprintf(err, err_len, "openvr_api.dll exports missing");
         return 1;
     }
     vr::EVRInitError error = vr::VRInitError_None;
     init(&error, overlay ? vr::VRApplication_Overlay : vr::VRApplication_Background, nullptr);
     if (error != vr::VRInitError_None) {
-        snprintf(err, err_len, "%s", describe(error));
+        snprintf(err, err_len, "%s", g_describe(error));
         return 1;
     }
-    g_settings = static_cast<vr::IVRSettings*>(iface(vr::IVRSettings_Version, &error));
+    g_settings = static_cast<vr::IVRSettings*>(lfp_interface(vr::IVRSettings_Version, err, err_len));
     if (!g_settings) {
-        snprintf(err, err_len, "%s: %s", vr::IVRSettings_Version, describe(error));
         g_shutdown();
         return 1;
     }
     return 0;
+}
+
+extern "C" void* lfp_interface(const char* version, char* err, size_t err_len) {
+    vr::EVRInitError error = vr::VRInitError_None;
+    void* p = g_iface(version, &error);
+    if (!p) {
+        snprintf(err, err_len, "%s: %s", version, g_describe(error));
+    }
+    return p;
 }
 
 extern "C" void lfp_disconnect(void) {
@@ -112,4 +122,16 @@ extern "C" int lfp_get_string(const char* key, char* value, size_t len) {
 
 extern "C" const char* lfp_error_name(int code) {
     return g_settings ? g_settings->GetSettingsErrorNameFromEnum(static_cast<vr::EVRSettingsError>(code)) : "not connected";
+}
+
+// The driver's vrserver, which spawned this process: the panel ends with it even when no quit
+// event arrives (a crash).
+extern "C" int lfp_process_gone(unsigned pid) {
+    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid);
+    if (!h) {
+        return 1;
+    }
+    int gone = WaitForSingleObject(h, 0) == WAIT_OBJECT_0 ? 1 : 0;
+    CloseHandle(h);
+    return gone;
 }

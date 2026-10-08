@@ -171,6 +171,23 @@ mod win {
         Ok(child.id())
     }
 
+    /// The settings panel, `leapfrog-panel.exe overlay <pid>` next to this DLL: a dashboard tab
+    /// for the duration of this vrserver (it ends with SteamVR's quit event or this process).
+    pub fn spawn_panel() -> Result<u32, String> {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let exe = own_directory().ok_or("own path unknown")?.join("leapfrog-panel.exe");
+        let child = Command::new(&exe)
+            .arg("overlay")
+            .arg(std::process::id().to_string())
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("could not start {}: {e}", exe.display()))?;
+        Ok(child.id())
+    }
+
     /// `leapctl config tracking resume|pause`: the saved pause state of the service. LeapSetPause
     /// from the SDK reports success and changes nothing on Gemini 5.20.
     pub fn tracking(state: &str) -> Result<i32, String> {
@@ -196,6 +213,10 @@ mod win {
     }
 
     pub fn spawn_watchdog() -> Result<u32, String> {
+        Ok(0)
+    }
+
+    pub fn spawn_panel() -> Result<u32, String> {
         Ok(0)
     }
 
@@ -226,6 +247,14 @@ pub fn start() {
 
 pub fn stop() {
     report("stop", win::set(false));
+}
+
+/// The settings panel (`panel` setting, default on): a dashboard tab in SteamVR's menu.
+pub fn start_panel() {
+    match win::spawn_panel() {
+        Ok(pid) => log!("settings panel started (pid {pid})"),
+        Err(why) => log!("settings panel not started: {why}"),
+    }
 }
 
 fn report(what: &str, result: Result<bool, u32>) {

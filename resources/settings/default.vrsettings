@@ -3,6 +3,7 @@
     "enable": true,
     "debugPanic": false,
     "manageService": true,
+    "panel": true,
     "trackingPerformance": "ultra",
     "handOnObject": true,
     "fastHandMotion": false,

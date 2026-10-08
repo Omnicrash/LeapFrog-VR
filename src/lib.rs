@@ -195,6 +195,9 @@ pub extern "C" fn lf_init() -> i32 {
             debug_panic_pending: host::setting_bool("debugPanic", false),
         };
         *STATE.lock().unwrap() = Some(state);
+        if host::setting_bool("panel", true) {
+            service::start_panel();
+        }
         log!("init: version {}, two hands registered, offsets {:?}, switching {:?}", env!("CARGO_PKG_VERSION"), offsets, thresholds);
         host::INIT_ERROR_NONE
     })
