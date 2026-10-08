@@ -177,6 +177,9 @@ pub extern "C" fn lf_init() -> i32 {
         };
         *STATE.lock().unwrap() = Some(state);
         log!("init: version {}, two hands registered, offsets {:?}, switching {:?}", env!("CARGO_PKG_VERSION"), offsets, thresholds);
+        if host::setting_float("debugAlternate", 0.0) > 0.0 {
+            log!("debugAlternate every {} s from the start", host::setting_float("debugAlternate", 0.0));
+        }
         host::INIT_ERROR_NONE
     })
 }

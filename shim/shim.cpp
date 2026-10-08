@@ -177,11 +177,18 @@ extern "C" bool lfh_settings_bool(const char* section, const char* key, bool fal
     return error == VRSettingsError_None ? value : fallback;
 }
 
+// A whole number written by a tool (PowerShell's JSON writes 1 for 1.0) is stored as an int;
+// GetFloat refuses it, so fall back to GetInt32 before the default.
 extern "C" float lfh_settings_float(const char* section, const char* key, float fallback)
 {
     EVRSettingsError error = VRSettingsError_None;
     float value = VRSettings()->GetFloat(section, key, &error);
-    return error == VRSettingsError_None ? value : fallback;
+    if (error == VRSettingsError_None) {
+        return value;
+    }
+    error = VRSettingsError_None;
+    int32_t whole = VRSettings()->GetInt32(section, key, &error);
+    return error == VRSettingsError_None ? static_cast<float>(whole) : fallback;
 }
 
 // Returns the length written (without the terminator), 0 when unset or too long.
