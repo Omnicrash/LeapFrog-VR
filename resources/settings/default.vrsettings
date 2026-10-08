@@ -14,7 +14,7 @@
     "rotationOffsetZ": 0.0,
     "handInwardOffset": 0.01,
     "passthrough": true,
-    "handTracking": true,
+    "handTracking": false,
     "tuneFile": false,
     "pickupSwitching": true,
     "awayDistance": 0.20,
