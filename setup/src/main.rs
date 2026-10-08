@@ -339,6 +339,35 @@ fn version_of(dir: &Path) -> String {
 }
 
 /// Removes the `driver_leapfrog` section from steamvr.vrsettings, after a backup copy.
+/// Drops `leapfrog-panel.vrmanifest` from SteamVR's registered application manifests
+/// (`appconfig.json`, `manifest_paths`), which the panel added for the startup overlay list.
+/// With SteamVR closed the file is the registry, and a stale entry would stay listed otherwise.
+fn remove_overlay_manifest(config_dir: &Path) -> Result<bool, String> {
+    let file = config_dir.join("appconfig.json");
+    let Ok(text) = std::fs::read_to_string(&file) else { return Ok(false) };
+    let mut out = String::with_capacity(text.len());
+    let mut removed = false;
+    for line in text.split_inclusive('\n') {
+        if line.contains("leapfrog-panel.vrmanifest") {
+            removed = true;
+            // The entry before this one may now carry a trailing comma it must lose.
+            if !line.trim_end().ends_with(',') {
+                if let Some(comma) = out.trim_end().strip_suffix(',') {
+                    let keep = comma.len();
+                    out.truncate(keep);
+                    out.push('\n');
+                }
+            }
+            continue;
+        }
+        out.push_str(line);
+    }
+    if removed {
+        std::fs::write(&file, out).map_err(|e| format!("cannot update {}: {e}", file.display()))?;
+    }
+    Ok(removed)
+}
+
 fn purge_settings(config_dir: &Path) -> Result<bool, String> {
     let file = config_dir.join("steamvr.vrsettings");
     let text = match std::fs::read_to_string(&file) {
@@ -508,6 +537,9 @@ fn uninstall(o: &Options) -> Result<(), String> {
             std::fs::remove_dir_all(dir).map_err(|e| format!("cannot remove {}: {e}", dir.display()))?;
             say(o, &format!("Removed {}", dir.display()));
         }
+    }
+    if remove_overlay_manifest(&vr.config_dir)? {
+        say(o, "Removed the settings panel from SteamVR's startup overlay apps");
     }
     unregister_app()?;
     say(o, "Removed from Settings > Apps");

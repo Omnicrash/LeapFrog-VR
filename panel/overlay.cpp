@@ -121,7 +121,6 @@ struct BoolSetting {
     bool live;
     bool value;
     const char* note; // gray explanation after the label, or null
-    bool confirm_off; // turning it off asks first
     const char* warning; // amber line under the note, within the row, or null
 };
 
@@ -142,15 +141,14 @@ FloatSetting g_switching[] = {
     {"Pickup speed", "pickupSpeed", 0.0f, 1.5f, 0.05f, 0.40f, "%.2f m/s", 0, "A controller moving faster than this counts as picked up"},
 };
 
-BoolSetting g_pickup = {"Automatic switching", "autoPickupSwitch", true, true, true, "If disabled, hands only track while controllers are off", false, nullptr};
+BoolSetting g_pickup = {"Automatic switching", "autoPickupSwitch", true, true, true, "If disabled, hands only track while controllers are off", nullptr};
 
 BoolSetting g_driver[] = {
-    {"Passthrough", "passthrough", true, false, true, "The controller shows the tracked hand while resting", false, nullptr},
-    {"Full tracking mode", "exposeAsFullTrackingMode", false, false, false, "Tell games the controller is fully hand tracked", false, "Breaks the pointer and the B menu button in VRChat"},
-    {"Manage service", "manageService", true, false, true, "Automatically start and stop the Ultraleap service with SteamVR", false, nullptr},
-    {"Hand on object", "handOnObject", true, false, true, "Hint to the Leap that hands might be holding objects", false, nullptr},
-    {"Fast hand motion", "fastHandMotion", false, false, false, "Favor quick movement over precision", false, nullptr},
-    {"Settings panel", "panel", true, false, true, "Show this tab in the dashboard", true, nullptr},
+    {"Passthrough", "passthrough", true, false, true, "The controller shows the tracked hand while resting", nullptr},
+    {"Full tracking mode", "exposeAsFullTrackingMode", false, false, false, "Tell games the controller is fully hand tracked", "Breaks the pointer and the B menu button in VRChat"},
+    {"Manage service", "manageService", true, false, true, "Automatically start and stop the Ultraleap service with SteamVR", nullptr},
+    {"Hand on object", "handOnObject", true, false, true, "Hint to the Leap that hands might be holding objects", nullptr},
+    {"Fast hand motion", "fastHandMotion", false, false, false, "Favor quick movement over precision", nullptr},
 };
 
 const char* const PERFORMANCE[] = {"low", "default", "ultra"};
@@ -245,31 +243,8 @@ void toggle(BoolSetting& s) {
         ImGui::SameLine(ImGui::GetContentRegionMax().x - 160.0f);
     }
     if (s.value) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.50f, 0.25f, 1.0f));
-    if (ImGui::Button(s.value ? "On" : "Off", ImVec2(160, 0))) {
-        if (s.value && s.confirm_off) {
-            ImGui::OpenPopup("confirm");
-        } else {
-            write(s, !s.value);
-        }
-    }
+    if (ImGui::Button(s.value ? "On" : "Off", ImVec2(160, 0))) write(s, !s.value);
     if (s.value) ImGui::PopStyleColor();
-    if (ImGui::BeginPopupModal("confirm", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
-        ImGui::TextUnformatted("Turn the settings panel off?");
-        ImGui::Dummy(ImVec2(0, 6));
-        ImGui::TextDisabled("This tab will be gone from the next SteamVR start. To bring it back,");
-        ImGui::TextDisabled("run \"leapfrog-panel.exe set panel true\" from the driver's bin\\win64 folder,");
-        ImGui::TextDisabled("or set \"panel\" to true under driver_leapfrog in steamvr.vrsettings.");
-        ImGui::Dummy(ImVec2(0, 10));
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.80f, 0.50f, 0.12f, 1.0f));
-        if (ImGui::Button("Turn off", ImVec2(220, 0))) {
-            write(s, false);
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::PopStyleColor();
-        ImGui::SameLine();
-        if (ImGui::Button("Keep", ImVec2(220, 0))) ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-    }
     ImGui::PopID();
 }
 

@@ -1,0 +1,16 @@
+{
+    "source" : "builtin",
+    "applications" : [{
+        "app_key" : "omnicrash.leapfrog.panel",
+        "launch_type" : "binary",
+        "binary_path_windows" : "bin/win64/leapfrog-panel.exe",
+        "arguments" : "overlay",
+        "is_dashboard_overlay" : true,
+        "strings" : {
+            "en_us" : {
+                "name" : "LeapFrog",
+                "description" : "LeapFrog settings: hand placement, switching and driver options"
+            }
+        }
+    }]
+}

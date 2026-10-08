@@ -33,6 +33,11 @@ void lfp_overlay_close(void);
 // Any other OpenVR interface by version string, once connected; null with err filled otherwise.
 void* lfp_interface(const char* version, char* err, size_t err_len);
 
+// The panel as a registered overlay app (manifest = full path of leapfrog-panel.vrmanifest).
+int lfp_app_installed(const char* key);
+int lfp_app_register(const char* manifest, const char* key, char* err, size_t err_len);
+int lfp_app_unregister(const char* manifest, char* err, size_t err_len);
+
 // 1 once the given process has ended (or cannot be opened).
 int lfp_process_gone(unsigned pid);
 

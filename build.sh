@@ -21,7 +21,7 @@ fi
 out=dist/leapfrog
 rm -rf "$out"
 mkdir -p "$out/bin/win64"
-cp driver.vrdrivermanifest "$out/"
+cp driver.vrdrivermanifest leapfrog-panel.vrmanifest "$out/"
 cp -r resources "$out/resources"
 cp target/x86_64-pc-windows-msvc/release/driver_leapfrog.dll "$out/bin/win64/"
 cp target/x86_64-pc-windows-msvc/release/leapfrog-watchdog.exe "$out/bin/win64/"

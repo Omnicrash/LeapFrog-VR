@@ -171,13 +171,14 @@ mod win {
         Ok(child.id())
     }
 
-    /// The settings panel, `leapfrog-panel.exe overlay <pid>` next to this DLL: a dashboard tab
-    /// for the duration of this vrserver (it ends with SteamVR's quit event or this process).
+    /// The settings panel, `leapfrog-panel.exe ensure <pid>` next to this DLL: registers the
+    /// panel as a startup overlay app the first time (and runs it for this session); afterwards
+    /// SteamVR launches it itself, per its "Choose Startup Overlay Apps" list.
     pub fn spawn_panel() -> Result<u32, String> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let exe = own_directory().ok_or("own path unknown")?.join("leapfrog-panel.exe");
         let child = Command::new(&exe)
-            .arg("overlay")
+            .arg("ensure")
             .arg(std::process::id().to_string())
             .creation_flags(CREATE_NO_WINDOW)
             .stdin(std::process::Stdio::null())
@@ -245,10 +246,10 @@ pub fn stop() {
     report("stop", win::set(false));
 }
 
-/// The settings panel (`panel` setting, default on): a dashboard tab in SteamVR's menu.
+/// The settings panel: a dashboard tab in SteamVR's menu, registered as a startup overlay app.
 pub fn start_panel() {
     match win::spawn_panel() {
-        Ok(pid) => log!("settings panel started (pid {pid})"),
+        Ok(pid) => log!("settings panel ensure started (pid {pid})"),
         Err(why) => log!("settings panel not started: {why}"),
     }
 }

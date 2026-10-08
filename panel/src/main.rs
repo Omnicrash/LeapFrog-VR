@@ -1,7 +1,10 @@
 //! `leapfrog-panel`: the driver's settings, written live into SteamVR.
 //!
-//! `leapfrog-panel overlay <pid>` runs the dashboard tab until SteamVR quits or the given process
-//! (the vrserver that spawned it) ends; the driver starts one per SteamVR run. Its log is
+//! `leapfrog-panel overlay [pid]` runs the dashboard tab until SteamVR quits (or the given
+//! process ends). SteamVR starts it as a registered overlay app ("Choose Startup Overlay Apps"),
+//! and `leapfrog-panel ensure <pid>`, run by the driver at every start, does the one-time
+//! registration: not registered yet -> register with autolaunch and run the tab for this session;
+//! registered -> exit, SteamVR's list decides. `unregister` is for the uninstaller. The log is
 //! `leapfrog-panel.log` next to the exe.
 //!
 //! `leapfrog-panel set <key> <value>` writes one setting from a terminal (`get <key>` reads it
@@ -31,17 +34,25 @@ mod ffi {
         pub fn lfp_overlay_visible() -> c_int;
         pub fn lfp_overlay_close();
         pub fn lfp_process_gone(pid: u32) -> c_int;
+        pub fn lfp_app_installed(key: *const c_char) -> c_int;
+        pub fn lfp_app_register(manifest: *const c_char, key: *const c_char, err: *mut c_char, err_len: usize) -> c_int;
+        pub fn lfp_app_unregister(manifest: *const c_char, err: *mut c_char, err_len: usize) -> c_int;
     }
 }
+
+const APP_KEY: &str = "omnicrash.leapfrog.panel";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["set", key, value] => run(|| set(key, value)),
         ["get", key] => run(|| get(key)),
-        ["overlay", pid] => overlay(pid.parse().unwrap_or(0)),
+        ["overlay"] => overlay(0, false),
+        ["overlay", pid] => overlay(pid.parse().unwrap_or(0), false),
+        ["ensure", pid] => overlay(pid.parse().unwrap_or(0), true),
+        ["unregister"] => run(unregister),
         _ => {
-            eprintln!("usage: leapfrog-panel set <key> <value> | get <key> | overlay <vrserver pid>");
+            eprintln!("usage: leapfrog-panel set <key> <value> | get <key> | overlay [vrserver pid] | ensure <vrserver pid> | unregister");
             2
         }
     };
@@ -50,7 +61,8 @@ fn main() {
 
 /// The dashboard tab. Connecting is retried for two minutes: the driver spawns the panel while
 /// SteamVR is still coming up, and an overlay app can only init once the compositor is there.
-fn overlay(parent: u32) -> i32 {
+/// With `ensure`, a registered app exits here and leaves the launch to SteamVR.
+fn overlay(parent: u32, ensure: bool) -> i32 {
     let exe = std::env::current_exe().ok();
     let dir = exe.as_deref().and_then(|p| p.parent()).map(|p| p.to_path_buf()).unwrap_or_default();
     let mut log = std::fs::File::create(dir.join("leapfrog-panel.log")).ok();
@@ -80,6 +92,19 @@ fn overlay(parent: u32) -> i32 {
         }
     }
     note(format!("connected as an overlay app after {:.1} s", started.elapsed().as_secs_f32()));
+    if ensure {
+        let key = CString::new(APP_KEY).unwrap_or_default();
+        // SAFETY: NUL-terminated key.
+        if unsafe { ffi::lfp_app_installed(key.as_ptr()) } != 0 {
+            note("registered as an overlay app: SteamVR's startup overlay list decides".to_string());
+            unsafe { ffi::lfp_disconnect() };
+            return 0;
+        }
+        match register(&dir) {
+            Ok(path) => note(format!("registered {path} as a startup overlay app; running the tab for this session")),
+            Err(e) => note(format!("registration failed, running the tab for this session: {e}")),
+        }
+    }
     let thumb = dir.join("..").join("..").join("resources").join("icons").join("right_hand_status_ready.png");
     let thumb_c = CString::new(thumb.to_string_lossy().as_bytes()).unwrap_or_default();
     let mut err = vec![0 as c_char; 256];
@@ -154,6 +179,43 @@ fn runtime_dir() -> Result<std::path::PathBuf, String> {
     let start = after.find('[').and_then(|i| after[i..].find('"').map(|j| i + j + 1)).ok_or("openvrpaths.vrpath: runtime list unreadable")?;
     let end = after[start..].find('"').ok_or("openvrpaths.vrpath: runtime path unterminated")?;
     Ok(std::path::PathBuf::from(after[start..start + end].replace("\\\\", "\\").replace("\\/", "/")))
+}
+
+/// The manifest's Windows path, two folders up from the exe (bin/win64).
+fn manifest_path(dir: &std::path::Path) -> Result<String, String> {
+    let path = dir.join("..").join("..").join("leapfrog-panel.vrmanifest");
+    let full = std::fs::canonicalize(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(full.to_string_lossy().trim_start_matches(r"\\?\").to_string())
+}
+
+/// Registers the manifest with SteamVR, autolaunch on. Needs a connected client.
+fn register(dir: &std::path::Path) -> Result<String, String> {
+    let path = manifest_path(dir)?;
+    let manifest = CString::new(path.as_bytes()).map_err(|_| "bad manifest path")?;
+    let key = CString::new(APP_KEY).unwrap_or_default();
+    let mut err = vec![0 as c_char; 256];
+    // SAFETY: NUL-terminated strings, error buffer of the given length.
+    if unsafe { ffi::lfp_app_register(manifest.as_ptr(), key.as_ptr(), err.as_mut_ptr(), err.len()) } != 0 {
+        // SAFETY: the C side wrote a NUL-terminated string.
+        return Err(unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().into_owned());
+    }
+    Ok(path)
+}
+
+/// Removes the registration (the uninstaller, with SteamVR running).
+fn unregister() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let dir = exe.parent().ok_or("own folder unknown")?;
+    let path = manifest_path(dir)?;
+    let manifest = CString::new(path.as_bytes()).map_err(|_| "bad manifest path")?;
+    let mut err = vec![0 as c_char; 256];
+    // SAFETY: NUL-terminated string, error buffer of the given length.
+    if unsafe { ffi::lfp_app_unregister(manifest.as_ptr(), err.as_mut_ptr(), err.len()) } != 0 {
+        // SAFETY: the C side wrote a NUL-terminated string.
+        return Err(unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().into_owned());
+    }
+    println!("unregistered {path}");
+    Ok(())
 }
 
 fn check(code: c_int) -> Result<(), String> {

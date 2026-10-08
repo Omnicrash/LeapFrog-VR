@@ -135,3 +135,40 @@ extern "C" int lfp_process_gone(unsigned pid) {
     CloseHandle(h);
     return gone;
 }
+
+// The panel as a registered overlay app: SteamVR's "Choose Startup Overlay Apps" list and its
+// own launch at start, instead of the driver's.
+extern "C" int lfp_app_installed(const char* key) {
+    char err[128];
+    auto apps = static_cast<vr::IVRApplications*>(lfp_interface(vr::IVRApplications_Version, err, sizeof err));
+    return apps && apps->IsApplicationInstalled(key) ? 1 : 0;
+}
+
+extern "C" int lfp_app_register(const char* manifest, const char* key, char* err, size_t err_len) {
+    auto apps = static_cast<vr::IVRApplications*>(lfp_interface(vr::IVRApplications_Version, err, err_len));
+    if (!apps) {
+        return 1;
+    }
+    vr::EVRApplicationError e = apps->AddApplicationManifest(manifest, false);
+    if (e == vr::VRApplicationError_None) {
+        e = apps->SetApplicationAutoLaunch(key, true);
+    }
+    if (e != vr::VRApplicationError_None) {
+        snprintf(err, err_len, "%s", apps->GetApplicationsErrorNameFromEnum(e));
+        return 1;
+    }
+    return 0;
+}
+
+extern "C" int lfp_app_unregister(const char* manifest, char* err, size_t err_len) {
+    auto apps = static_cast<vr::IVRApplications*>(lfp_interface(vr::IVRApplications_Version, err, err_len));
+    if (!apps) {
+        return 1;
+    }
+    vr::EVRApplicationError e = apps->RemoveApplicationManifest(manifest);
+    if (e != vr::VRApplicationError_None) {
+        snprintf(err, err_len, "%s", apps->GetApplicationsErrorNameFromEnum(e));
+        return 1;
+    }
+    return 0;
+}
