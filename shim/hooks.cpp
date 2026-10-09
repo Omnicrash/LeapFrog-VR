@@ -13,6 +13,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <cwchar>
 
 using namespace vr;
 
@@ -144,7 +145,7 @@ void hook_pose_updated(void* self, uint32_t device, const DriverPose_t& pose, ui
     orig(self, device, copy, size);
 }
 
-// IVRDriverInput_003/004, slot 5
+// IVRDriverInput_003/004/005, slot 5
 EVRInputError hook_create_skeleton(void* self, PropertyContainerHandle_t container, const char* name, const char* skeleton_path,
                                    const char* base_pose_path, EVRSkeletalTrackingLevel level, const VRBoneTransform_t* grip_limits,
                                    uint32_t grip_limit_count, VRInputComponentHandle_t* handle)
@@ -166,7 +167,7 @@ EVRInputError hook_create_skeleton(void* self, PropertyContainerHandle_t contain
     return result;
 }
 
-// IVRDriverInput_003/004, slot 6
+// IVRDriverInput_003/004/005, slot 6
 EVRInputError hook_update_skeleton(void* self, VRInputComponentHandle_t component, EVRSkeletalMotionRange range,
                                    const VRBoneTransform_t* bones, uint32_t count)
 {
@@ -195,9 +196,43 @@ void hook_host(void* object, const char* name)
     }
 }
 
+// Which interface versions have the slots above where we expect them. Host 006 and input 003 are
+// the public headers; Valve's master header defines 004 as 003 plus appended methods; 005 (the
+// SteamVR 2.18 beta's lighthouse, no public header) was read from vrserver 2.18.2: the same 11
+// slots as 004, each a wrapper that forwards the 004 signature with a driver id in front. Any
+// other version is logged with its skeleton slots and left alone.
+bool known_host(const char* name) { return std::strcmp(name, "IVRServerDriverHost_006") == 0; }
+bool known_input(const char* name)
+{
+    return std::strcmp(name, "IVRDriverInput_003") == 0 || std::strcmp(name, "IVRDriverInput_004") == 0 || std::strcmp(name, "IVRDriverInput_005") == 0;
+}
+
+// "module+offset" of a vtable entry, for the log.
+void describe(void* fn, char* out, size_t size)
+{
+    HMODULE module = nullptr;
+    wchar_t path[MAX_PATH] = L"";
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, static_cast<LPCWSTR>(fn), &module)
+        && GetModuleFileNameW(module, path, MAX_PATH)) {
+        const wchar_t* base = wcsrchr(path, L'\\');
+        base = base ? base + 1 : path;
+        std::snprintf(out, size, "%ls+0x%llx", base, static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(fn) - reinterpret_cast<uintptr_t>(module)));
+    } else {
+        std::snprintf(out, size, "%p", fn);
+    }
+}
+
 void hook_input(void* object, const char* name)
 {
     if (!object || already(object)) {
+        return;
+    }
+    if (!known_input(name)) {
+        void** vtable = *static_cast<void***>(object);
+        char create[96], update[96];
+        describe(vtable[5], create, sizeof(create));
+        describe(vtable[6], update, sizeof(update));
+        log_line("%s requested: unknown version, not hooked (slot 5 %s, slot 6 %s)", name, create, update);
         return;
     }
     Patched* p = claim(object);
@@ -205,11 +240,6 @@ void hook_input(void* object, const char* name)
         log_line("%s: CreateSkeletonComponent and UpdateSkeletonComponent hooked", name);
     }
 }
-
-// Which host interface versions have the slots above where we expect them: 006 and 003/004 are
-// what this header was built against; anything else is logged and left alone.
-bool known_host(const char* name) { return std::strcmp(name, "IVRServerDriverHost_006") == 0; }
-bool known_input(const char* name) { return std::strcmp(name, "IVRDriverInput_003") == 0 || std::strcmp(name, "IVRDriverInput_004") == 0; }
 
 void on_interface(void* object, const char* name)
 {
@@ -220,9 +250,9 @@ void on_interface(void* object, const char* name)
     bool input = std::strncmp(name, "IVRDriverInput_", 15) == 0;
     if (host && known_host(name)) {
         hook_host(object, name);
-    } else if (input && known_input(name)) {
+    } else if (input) {
         hook_input(object, name);
-    } else if (host || input) {
+    } else if (host) {
         log_line("%s requested: unknown version, not hooked", name);
     }
 }
@@ -279,7 +309,7 @@ void install(IVRDriverContext* context)
     }
     // Drivers loaded before us already hold their interfaces: ask for the same objects and patch
     // them now. The context hook then catches what is requested later.
-    const char* names[] = { "IVRServerDriverHost_006", "IVRDriverInput_003", "IVRDriverInput_004" };
+    const char* names[] = { "IVRServerDriverHost_006", "IVRDriverInput_003", "IVRDriverInput_004", "IVRDriverInput_005" };
     for (const char* name : names) {
         EVRInitError error = VRInitError_None;
         void* object = context->GetGenericInterface(name, &error);
