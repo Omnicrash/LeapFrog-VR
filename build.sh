@@ -37,7 +37,7 @@ fi
 
 # --install: copy over the registered driver folder; refused while SteamVR holds the DLL.
 if [ "$install" = 1 ]; then
-    target="${LEAPFROG_INSTALL:-/mnt/e/Games/VR/leapfrog}"
+    target="${LEAPFROG_INSTALL:-/mnt/c/Users/yve/AppData/Local/LeapFrog/driver}"
     if tasklist.exe 2>/dev/null | grep -qi '^vrserver.exe'; then
         echo "SteamVR is running: close it first" >&2
         exit 1
