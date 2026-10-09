@@ -18,31 +18,26 @@ pub fn now_us() -> i64 {
 }
 
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)] // next_joint and width: kept from LeapC for later use
 pub struct Bone {
     pub prev_joint: [f32; 3],
-    pub next_joint: [f32; 3],
     pub rotation: [f32; 4], // x, y, z, w
-    pub width: f32,         // mm
 }
 
 const IDENTITY: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
 impl Default for Bone {
     fn default() -> Bone {
-        Bone { prev_joint: [0.0; 3], next_joint: [0.0; 3], rotation: IDENTITY, width: 15.0 }
+        Bone { prev_joint: [0.0; 3], rotation: IDENTITY }
     }
 }
 
 /// One hand from one tracking frame, plain data copied out of LeapC's event.
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)] // elbow and next_joint are for the put-down detection of stage 2
 pub struct HandSample {
     pub timestamp_us: i64,
     pub palm_position: [f32; 3],
     pub palm_orientation: [f32; 4],
     pub wrist: [f32; 3],
-    pub elbow: [f32; 3],
     pub fingers: [[Bone; 4]; 5],
 }
 
@@ -53,19 +48,17 @@ impl Default for HandSample {
             palm_position: [0.0; 3],
             palm_orientation: IDENTITY,
             wrist: [0.0; 3],
-            elbow: [0.0; 3],
             fingers: [[Bone::default(); 4]; 5],
         }
     }
 }
 
+/// The newest sample per hand, left and right.
+#[cfg(not(feature = "host-stubs"))]
 #[derive(Default)]
-#[allow(dead_code)]
 pub struct Frames {
     pub left: Option<HandSample>,
     pub right: Option<HandSample>,
-    pub service_connected: bool,
-    pub devices: i32,
 }
 
 #[cfg(not(feature = "host-stubs"))]
@@ -87,7 +80,9 @@ pub struct Leap {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub manage_service: bool,
-    pub hint: Option<String>,
+    pub resume_tracking: bool,
+    /// The tracking hints, one C string each.
+    pub hints: Vec<std::ffi::CString>,
 }
 
 // Not in leap-sys 0.2 (its header predates it); Gemini 5.x exports it. `hints` is a
@@ -133,8 +128,8 @@ impl Drop for Leap {
     }
 }
 
-/// A LEAP_CONNECTION with its lifetime tied to the value.
-pub struct Connection(pub sys::LEAP_CONNECTION, Vec<sys::LEAP_DEVICE>);
+/// A LEAP_CONNECTION with its lifetime tied to the value, and the devices opened on it (id, handle).
+pub struct Connection(pub sys::LEAP_CONNECTION, Vec<(u32, sys::LEAP_DEVICE)>);
 
 impl Connection {
     pub fn open() -> Option<Connection> {
@@ -163,20 +158,24 @@ impl Connection {
         Some(Connection(handle, Vec::new()))
     }
 
-    /// Opens and subscribes to every camera the service lists, and hands it the hint. Called
-    /// after each Device event; a service that restarted lists its camera without announcing it.
-    pub fn subscribe_all(&mut self, hint: Option<&str>) {
+    /// Opens and subscribes to every camera the service lists that is not open yet, and hands
+    /// it the hints. Called after each Device event; a service that restarted lists its camera
+    /// without announcing it.
+    pub fn subscribe_all(&mut self, hints: &[std::ffi::CString]) {
         let mut refs: [sys::LEAP_DEVICE_REF; 4] = [sys::LEAP_DEVICE_REF { handle: std::ptr::null_mut(), id: 0 }; 4];
         let mut count = refs.len() as u32;
         // SAFETY: the array and its length are passed together.
         if unsafe { sys::LeapGetDeviceList(self.0, refs.as_mut_ptr(), &mut count) } != sys::_eLeapRS_eLeapRS_Success {
             return;
         }
-        // The hint setting is a comma-separated set; one C string each, null-terminated array.
-        let hint_cs: Vec<std::ffi::CString> = hint
-            .map(|h| h.split(',').map(str::trim).filter(|h| !h.is_empty()).filter_map(|h| std::ffi::CString::new(h).ok()).collect())
-            .unwrap_or_default();
+        // Null-terminated array of C strings, as LeapSetDeviceHints wants it.
+        let mut hint_ptrs: Vec<*const std::ffi::c_char> = hints.iter().map(|h| h.as_ptr()).collect();
+        hint_ptrs.push(std::ptr::null());
         for r in refs.iter().take(count.min(4) as usize) {
+            let id = r.id; // copied out: LEAP_DEVICE_REF is packed
+            if self.1.iter().any(|d| d.0 == id) {
+                continue;
+            }
             let mut device: sys::LEAP_DEVICE = std::ptr::null_mut();
             // SAFETY: LeapC API; the device handle is kept until the connection is dropped.
             unsafe {
@@ -184,17 +183,10 @@ impl Connection {
                     continue;
                 }
                 let subscribed = sys::LeapSubscribeEvents(self.0, device);
-                let hinted = if hint_cs.is_empty() {
-                    sys::_eLeapRS_eLeapRS_Success
-                } else {
-                    let mut hints: Vec<*const std::ffi::c_char> = hint_cs.iter().map(|h| h.as_ptr()).collect();
-                    hints.push(std::ptr::null());
-                    LeapSetDeviceHints(self.0, device, hints.as_ptr())
-                };
-                let id = r.id; // copied out: LEAP_DEVICE_REF is packed
-                log!("Leap: device {id} subscribed ({:#x}), hints {} ({:#x})", subscribed as u32, hint.unwrap_or("none"), hinted as u32);
+                let hinted = if hints.is_empty() { sys::_eLeapRS_eLeapRS_Success } else { LeapSetDeviceHints(self.0, device, hint_ptrs.as_ptr()) };
+                log!("Leap: device {id} subscribed ({:#x}), {} hints ({:#x})", subscribed as u32, hints.len(), hinted as u32);
             }
-            self.1.push(device);
+            self.1.push((id, device));
         }
     }
 }
@@ -203,7 +195,7 @@ impl Drop for Connection {
     fn drop(&mut self) {
         // SAFETY: the handles came from LeapOpenDevice / LeapCreateConnection and are dropped once.
         unsafe {
-            for device in self.1.drain(..) {
+            for (_, device) in self.1.drain(..) {
                 sys::LeapCloseDevice(device);
             }
             sys::LeapCloseConnection(self.0);
@@ -219,7 +211,7 @@ enum Next {
 
 fn run(frames: Arc<Mutex<Frames>>, stop: Arc<AtomicBool>, config: Config) {
     if config.manage_service {
-        crate::service::start();
+        crate::service::start(config.resume_tracking);
     }
     let mut was_reopened = false;
     while !stop.load(Ordering::SeqCst) {
@@ -228,7 +220,7 @@ fn run(frames: Arc<Mutex<Frames>>, stop: Arc<AtomicBool>, config: Config) {
             sleep_unless_stopped(&stop, Duration::from_secs(2));
             continue;
         };
-        let reason = poll_loop(&mut connection, &frames, &stop, &mut was_reopened, config.hint.as_deref());
+        let reason = poll_loop(&mut connection, &frames, &stop, &mut was_reopened, &config.hints);
         drop(connection);
         if let Ok(mut f) = frames.lock() {
             *f = Frames::default();
@@ -248,7 +240,7 @@ fn sleep_unless_stopped(stop: &AtomicBool, total: Duration) {
 }
 
 /// Polls one connection until it should be replaced (Some(reason)) or the driver stops (None).
-fn poll_loop(connection: &mut Connection, frames: &Mutex<Frames>, stop: &AtomicBool, was_reopened: &mut bool, hint: Option<&str>) -> Option<&'static str> {
+fn poll_loop(connection: &mut Connection, frames: &Mutex<Frames>, stop: &AtomicBool, was_reopened: &mut bool, hints: &[std::ffi::CString]) -> Option<&'static str> {
     let opened = Instant::now();
     let mut hands_logged = false;
     while !stop.load(Ordering::SeqCst) {
@@ -272,27 +264,19 @@ fn poll_loop(connection: &mut Connection, frames: &Mutex<Frames>, stop: &AtomicB
                 } else {
                     *was_reopened = false;
                     log!("Leap: connected to the tracking service");
-                    if let Ok(mut f) = frames.lock() {
-                        f.service_connected = true;
-                    }
                     Next::Continue
                 }
             }
             sys::_eLeapEventType_eLeapEventType_ConnectionLost => Next::Reopen("connection to the tracking service lost"),
             sys::_eLeapEventType_eLeapEventType_Device => {
                 log!("Leap: device connected");
-                if let Ok(mut f) = frames.lock() {
-                    f.devices += 1;
-                }
-                connection.subscribe_all(hint);
+                connection.subscribe_all(hints);
                 Next::Continue
             }
             sys::_eLeapEventType_eLeapEventType_DeviceLost => {
                 log!("Leap: device lost");
                 if let Ok(mut f) = frames.lock() {
-                    f.devices -= 1;
-                    f.left = None;
-                    f.right = None;
+                    *f = Frames::default();
                 }
                 Next::Continue
             }
@@ -359,8 +343,7 @@ fn sample_of(hand: &sys::LEAP_HAND, timestamp_us: i64) -> HandSample {
         // SAFETY: same union shape as above, four bones.
         let bones = unsafe { digit.__bindgen_anon_1.bones };
         for (b, bone) in bones.iter().enumerate() {
-            let width = bone.width; // packed field, copied
-            fingers[f][b] = Bone { prev_joint: vec3(bone.prev_joint), next_joint: vec3(bone.next_joint), rotation: quat(bone.rotation), width };
+            fingers[f][b] = Bone { prev_joint: vec3(bone.prev_joint), rotation: quat(bone.rotation) };
         }
     }
     HandSample {
@@ -368,7 +351,6 @@ fn sample_of(hand: &sys::LEAP_HAND, timestamp_us: i64) -> HandSample {
         palm_position: vec3(palm.position),
         palm_orientation: quat(palm.orientation),
         wrist: vec3(arm.next_joint),
-        elbow: vec3(arm.prev_joint),
         fingers,
     }
 }

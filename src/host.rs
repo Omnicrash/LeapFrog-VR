@@ -1,9 +1,12 @@
 //! The vrserver side of the shim contract: `#[repr(C)]` mirrors of the OpenVR structs we pass
 //! through, the raw `lfh_*` imports, and safe wrappers over them.
 
-#![allow(dead_code)] // wrappers for the coming iterations (poses, bones, other devices)
+use std::ffi::{CStr, CString};
 
-use std::ffi::CString;
+use glam::{Quat, Vec3};
+
+/// The driver's settings section.
+const SECTION: &CStr = c"driver_leapfrog";
 
 pub const HAND_LEFT: u32 = 0;
 pub const HAND_RIGHT: u32 = 1;
@@ -160,6 +163,7 @@ pub mod ffi {
         pub fn lfh_tracked_device_added(serial: *const c_char, device_class: i32, hand: u32) -> bool;
         pub fn lfh_pose_updated(object_id: u32, driver_pose: *const c_void);
         pub fn lfh_pose_updated_as(object_id: u32, driver_pose: *const c_void) -> bool;
+        pub fn lfh_hooks_watch(hand: u32, object_id: u32, skeleton: u64);
         pub fn lfh_get_raw_poses(predicted_seconds: f32, tracked_poses: *mut c_void, count: u32);
         pub fn lfh_prop_container(object_id: u32) -> u64;
         pub fn lfh_set_prop_string(container: u64, prop: i32, value: *const c_char) -> i32;
@@ -193,6 +197,7 @@ pub mod ffi {
     pub unsafe fn lfh_tracked_device_added(_: *const c_char, _: i32, _: u32) -> bool { true }
     pub unsafe fn lfh_pose_updated(_: u32, _: *const c_void) {}
     pub unsafe fn lfh_pose_updated_as(_: u32, _: *const c_void) -> bool { false }
+    pub unsafe fn lfh_hooks_watch(_: u32, _: u32, _: u64) {}
     pub unsafe fn lfh_get_raw_poses(_: f32, _: *mut c_void, _: u32) {}
     pub unsafe fn lfh_prop_container(_: u32) -> u64 { 0 }
     pub unsafe fn lfh_set_prop_string(_: u64, _: i32, _: *const c_char) -> i32 { 0 }
@@ -227,6 +232,32 @@ pub fn layout_matches() -> Result<(), String> {
 
 fn cstr(s: &str) -> CString {
     CString::new(s).unwrap_or_default()
+}
+
+impl From<Quat> for Quaternion {
+    fn from(q: Quat) -> Quaternion {
+        Quaternion { w: q.w as f64, x: q.x as f64, y: q.y as f64, z: q.z as f64 }
+    }
+}
+
+impl From<Quaternion> for Quat {
+    fn from(q: Quaternion) -> Quat {
+        Quat::from_xyzw(q.x as f32, q.y as f32, q.z as f32, q.w as f32).normalize()
+    }
+}
+
+pub fn vec_f64(v: Vec3) -> [f64; 3] {
+    [v.x as f64, v.y as f64, v.z as f64]
+}
+
+pub fn vec_f32(v: [f64; 3]) -> Vec3 {
+    Vec3::new(v[0] as f32, v[1] as f32, v[2] as f32)
+}
+
+/// Which device and skeleton handle the hooks pass in for a hand (`u32::MAX` / 0: none).
+pub fn hooks_watch(hand: u32, object_id: u32, skeleton: u64) {
+    // SAFETY: plain call into the shim.
+    unsafe { ffi::lfh_hooks_watch(hand, object_id, skeleton) }
 }
 
 pub fn tracked_device_added(serial: &str, device_class: i32, hand: u32) -> bool {
@@ -319,23 +350,20 @@ pub fn update_skeleton(handle: u64, motion_range: i32, bones: &[BoneTransform]) 
     unsafe { ffi::lfh_update_skeleton(handle, motion_range, bones.as_ptr() as *const _, bones.len() as u32) }
 }
 
-pub fn setting_bool(key: &str, fallback: bool) -> bool {
-    let (section, key) = (cstr("driver_leapfrog"), cstr(key));
-    // SAFETY: strings outlive the call.
-    unsafe { ffi::lfh_settings_bool(section.as_ptr(), key.as_ptr(), fallback) }
+pub fn setting_bool(key: &CStr, fallback: bool) -> bool {
+    // SAFETY: static strings.
+    unsafe { ffi::lfh_settings_bool(SECTION.as_ptr(), key.as_ptr(), fallback) }
 }
 
-pub fn setting_float(key: &str, fallback: f32) -> f32 {
-    let (section, key) = (cstr("driver_leapfrog"), cstr(key));
-    // SAFETY: strings outlive the call.
-    unsafe { ffi::lfh_settings_float(section.as_ptr(), key.as_ptr(), fallback) }
+pub fn setting_float(key: &CStr, fallback: f32) -> f32 {
+    // SAFETY: static strings.
+    unsafe { ffi::lfh_settings_float(SECTION.as_ptr(), key.as_ptr(), fallback) }
 }
 
-pub fn setting_string(key: &str, fallback: &str) -> String {
-    let (section, key) = (cstr("driver_leapfrog"), cstr(key));
+pub fn setting_string(key: &CStr, fallback: &str) -> String {
     let mut buf = [0u8; 256];
-    // SAFETY: the buffer and its length are passed together; strings outlive the call.
-    let n = unsafe { ffi::lfh_settings_string(section.as_ptr(), key.as_ptr(), buf.as_mut_ptr() as *mut _, buf.len() as u32) };
+    // SAFETY: the buffer and its length are passed together; static strings.
+    let n = unsafe { ffi::lfh_settings_string(SECTION.as_ptr(), key.as_ptr(), buf.as_mut_ptr() as *mut _, buf.len() as u32) };
     if n == 0 {
         return fallback.to_string();
     }

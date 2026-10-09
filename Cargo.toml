@@ -23,6 +23,8 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_
 [features]
 # cargo test on the build host: stubs instead of the shim and LeapC
 host-stubs = []
+# proves the panic guard: a deliberate panic in the first frame (never in a shipped build)
+debug-panic = []
 
 [build-dependencies]
 cc = "1"

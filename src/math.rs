@@ -127,11 +127,19 @@ fn trs(t: Vec3, r: Quat) -> Mat4 {
 
 /// Offsets from the settings file: hand position in meters (head frame, both hands alike),
 /// rotation in degrees, and an inward shift per hand (meters, toward the other hand).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Offsets {
     pub position: Vec3,
     pub rotation_degrees: Vec3,
     pub inward: f32,
+}
+
+/// The shipped defaults (`resources/settings/default.vrsettings` carries the same values): the
+/// position tuned so the Leap hand sits where VRChat places the held one.
+impl Default for Offsets {
+    fn default() -> Offsets {
+        Offsets { position: Vec3::new(-0.01, 0.06, -0.08), rotation_degrees: Vec3::ZERO, inward: 0.01 }
+    }
 }
 
 /// The HMD's raw pose as the driver's world transform.

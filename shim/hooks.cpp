@@ -1,7 +1,7 @@
-// Passthrough hooks. The mechanism is Leapify's (InterfaceHook.cpp),
-// without rcmp: the vtable slot is made writable, the original kept per vtable, the replacement
-// written. Everything is passed through; Rust (lf_hook_*) may edit the pose or the bones in place
-// and never sees LeapFrog's own calls.
+// Passthrough hooks. The mechanism is Leapify's (InterfaceHook.cpp), without rcmp: the vtable
+// slot is made writable, the original kept per vtable, the replacement written. Only the two
+// watched controllers (and their skeletons) go through Rust; every other call, and LeapFrog's
+// own, passes straight to the original.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -9,6 +9,7 @@
 #include "hooks.h"
 #include "shim.h"
 
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -17,9 +18,28 @@ using namespace vr;
 
 namespace {
 
+const uint32_t NONE = UINT32_MAX;
+const uint64_t NO_HANDLE = 0;
+
 thread_local int t_own_calls = 0;
 
-void logf(const char* fmt, ...)
+// The devices and skeleton handles Rust wants to see, per hand; anything else is passed through
+// without a copy, a call into Rust or a lock.
+std::atomic<uint32_t> g_watched_device[2] = { NONE, NONE };
+std::atomic<uint64_t> g_watched_skeleton[2] = { NO_HANDLE, NO_HANDLE };
+
+bool watched_device(uint32_t device)
+{
+    return device == g_watched_device[0].load(std::memory_order_relaxed) || device == g_watched_device[1].load(std::memory_order_relaxed);
+}
+
+bool watched_skeleton(uint64_t handle)
+{
+    return handle != NO_HANDLE
+        && (handle == g_watched_skeleton[0].load(std::memory_order_relaxed) || handle == g_watched_skeleton[1].load(std::memory_order_relaxed));
+}
+
+void log_line(const char* fmt, ...)
 {
     char buf[320];
     std::strcpy(buf, "[LeapFrog] hook: ");
@@ -59,7 +79,7 @@ bool already(void* object)
 Patched* claim(void* object)
 {
     if (g_patched_count >= 8) {
-        logf("too many vtables; not hooking");
+        log_line("too many vtables; not hooking");
         return nullptr;
     }
     Patched& p = g_patched[g_patched_count++];
@@ -68,40 +88,56 @@ Patched* claim(void* object)
     return &p;
 }
 
-bool patch(Patched& p, size_t slot, void* replacement)
+bool write_slot(void** entry, void* value)
 {
-    void** entry = p.vtable + slot;
     DWORD old = 0;
     if (!VirtualProtect(entry, sizeof(void*), PAGE_READWRITE, &old)) {
-        logf("VirtualProtect failed on slot %zu: %lu", slot, GetLastError());
         return false;
     }
-    p.original[slot] = *entry;
-    *entry = replacement;
+    *entry = value;
     DWORD ignored = 0;
     VirtualProtect(entry, sizeof(void*), old, &ignored);
     return true;
 }
 
+bool patch(Patched& p, size_t slot, void* replacement)
+{
+    void** entry = p.vtable + slot;
+    void* original = *entry;
+    if (!write_slot(entry, replacement)) {
+        log_line("VirtualProtect failed on slot %zu: %lu", slot, GetLastError());
+        return false;
+    }
+    p.original[slot] = original;
+    return true;
+}
+
+using PoseUpdated = void (*)(void*, uint32_t, const DriverPose_t&, uint32_t);
+
+PoseUpdated original_pose_updated(void* self)
+{
+    Patched* p = find(self);
+    return reinterpret_cast<PoseUpdated>(p ? p->original[1] : nullptr);
+}
+
 // The host object each device's own driver sends its poses through: vrserver attributes a pose
 // update to the calling driver, so poses LeapFrog sends for a lighthouse device through its own
-// host object are dropped (2026-10-08, 04:59). Sending through the owner's object lands.
+// host object are dropped. Sending through the owner's object lands.
 void* g_host_self[k_unMaxTrackedDeviceCount];
 
 // IVRServerDriverHost_006, slot 1
 void hook_pose_updated(void* self, uint32_t device, const DriverPose_t& pose, uint32_t size)
 {
-    if (device < k_unMaxTrackedDeviceCount && t_own_calls == 0) {
-        g_host_self[device] = self;
-    }
-    Patched* p = find(self);
-    auto orig = reinterpret_cast<void (*)(void*, uint32_t, const DriverPose_t&, uint32_t)>(p ? p->original[1] : nullptr);
+    PoseUpdated orig = original_pose_updated(self);
     if (!orig) {
         return;
     }
-    if (t_own_calls > 0 || size != sizeof(DriverPose_t)) {
+    if (t_own_calls > 0 || size != sizeof(DriverPose_t) || !watched_device(device)) {
         orig(self, device, pose, size);
         return;
+    }
+    if (device < k_unMaxTrackedDeviceCount) {
+        g_host_self[device] = self;
     }
     DriverPose_t copy = pose;
     lf_hook_pose(device, &copy);
@@ -139,7 +175,7 @@ EVRInputError hook_update_skeleton(void* self, VRInputComponentHandle_t componen
     if (!orig) {
         return VRInputError_InvalidHandle;
     }
-    if (t_own_calls > 0 || bones == nullptr || count != 31) {
+    if (t_own_calls > 0 || bones == nullptr || count != 31 || !watched_skeleton(component)) {
         return orig(self, component, range, bones, count);
     }
     VRBoneTransform_t copy[31];
@@ -155,7 +191,7 @@ void hook_host(void* object, const char* name)
     }
     Patched* p = claim(object);
     if (p && patch(*p, 1, reinterpret_cast<void*>(&hook_pose_updated))) {
-        logf("%s: TrackedDevicePoseUpdated hooked", name);
+        log_line("%s: TrackedDevicePoseUpdated hooked", name);
     }
 }
 
@@ -166,32 +202,14 @@ void hook_input(void* object, const char* name)
     }
     Patched* p = claim(object);
     if (p && patch(*p, 5, reinterpret_cast<void*>(&hook_create_skeleton)) && patch(*p, 6, reinterpret_cast<void*>(&hook_update_skeleton))) {
-        logf("%s: CreateSkeletonComponent and UpdateSkeletonComponent hooked", name);
+        log_line("%s: CreateSkeletonComponent and UpdateSkeletonComponent hooked", name);
     }
 }
 
 // Which host interface versions have the slots above where we expect them: 006 and 003/004 are
-// what this header and Leapify's hook were built against; anything else is logged and left alone.
+// what this header was built against; anything else is logged and left alone.
 bool known_host(const char* name) { return std::strcmp(name, "IVRServerDriverHost_006") == 0; }
 bool known_input(const char* name) { return std::strcmp(name, "IVRDriverInput_003") == 0 || std::strcmp(name, "IVRDriverInput_004") == 0; }
-
-char g_seen[64][48];
-int g_seen_count = 0;
-
-bool first_sight(const char* name)
-{
-    for (int i = 0; i < g_seen_count; i++) {
-        if (std::strcmp(g_seen[i], name) == 0) {
-            return false;
-        }
-    }
-    if (g_seen_count < 64) {
-        std::strncpy(g_seen[g_seen_count], name, sizeof(g_seen[0]) - 1);
-        g_seen[g_seen_count][sizeof(g_seen[0]) - 1] = '\0';
-        g_seen_count++;
-    }
-    return true;
-}
 
 void on_interface(void* object, const char* name)
 {
@@ -200,13 +218,12 @@ void on_interface(void* object, const char* name)
     }
     bool host = std::strncmp(name, "IVRServerDriverHost_", 20) == 0;
     bool input = std::strncmp(name, "IVRDriverInput_", 15) == 0;
-    if (first_sight(name) && ((host && !known_host(name)) || (input && !known_input(name)))) {
-        logf("%s requested: unknown version, not hooked", name);
-    }
     if (host && known_host(name)) {
         hook_host(object, name);
     } else if (input && known_input(name)) {
         hook_input(object, name);
+    } else if (host || input) {
+        log_line("%s requested: unknown version, not hooked", name);
     }
 }
 
@@ -234,13 +251,20 @@ extern "C" bool lfh_pose_updated_as(uint32_t object_id, const void* driver_pose)
         return false;
     }
     void* self = g_host_self[object_id];
-    Patched* p = find(self);
-    auto orig = reinterpret_cast<void (*)(void*, uint32_t, const DriverPose_t&, uint32_t)>(p ? p->original[1] : nullptr);
+    PoseUpdated orig = original_pose_updated(self);
     if (!orig) {
         return false;
     }
     orig(self, object_id, *static_cast<const DriverPose_t*>(driver_pose), sizeof(DriverPose_t));
     return true;
+}
+
+extern "C" void lfh_hooks_watch(uint32_t hand, uint32_t object_id, uint64_t skeleton)
+{
+    if (hand < 2) {
+        g_watched_device[hand].store(object_id, std::memory_order_relaxed);
+        g_watched_skeleton[hand].store(skeleton, std::memory_order_relaxed);
+    }
 }
 
 namespace lf_hooks {
@@ -254,7 +278,7 @@ void install(IVRDriverContext* context)
         return;
     }
     // Drivers loaded before us already hold their interfaces: ask for the same objects and patch
-    // them now. The context hook then catches what is requested later, and logs every version.
+    // them now. The context hook then catches what is requested later.
     const char* names[] = { "IVRServerDriverHost_006", "IVRDriverInput_003", "IVRDriverInput_004" };
     for (const char* name : names) {
         EVRInitError error = VRInitError_None;
@@ -262,13 +286,29 @@ void install(IVRDriverContext* context)
         if (object && error == VRInitError_None) {
             on_interface(object, name);
         } else {
-            logf("%s not offered by vrserver (%d)", name, static_cast<int>(error));
+            log_line("%s not offered by vrserver (%d)", name, static_cast<int>(error));
         }
     }
     Patched* p = claim(context);
     if (p && patch(*p, 0, reinterpret_cast<void*>(&hook_get_generic_interface))) {
-        logf("IVRDriverContext: GetGenericInterface hooked");
+        log_line("IVRDriverContext: GetGenericInterface hooked");
     }
+}
+
+// Puts every original slot back, so nothing points into this DLL once it is unloaded.
+void uninstall()
+{
+    lfh_hooks_watch(0, NONE, NO_HANDLE);
+    lfh_hooks_watch(1, NONE, NO_HANDLE);
+    for (int i = 0; i < g_patched_count; i++) {
+        Patched& p = g_patched[i];
+        for (size_t slot = 0; slot < 8; slot++) {
+            if (p.original[slot] && !write_slot(p.vtable + slot, p.original[slot])) {
+                log_line("VirtualProtect failed restoring slot %zu", slot);
+            }
+        }
+    }
+    g_patched_count = 0;
 }
 
 } // namespace lf_hooks

@@ -36,7 +36,6 @@ echo "built $out (version $version)"
 
 # --package: the wizard installer (NSIS, setup/leapfrog.nsi) from the dist folder.
 if [ "$package" = 1 ]; then
-    rm -f dist/LeapFrog-*.zip
     makensis -V2 -DVERSION="$version" -DSRC="$PWD/setup" -DDIST="$PWD/dist/leapfrog" -DOUT="$PWD/dist/LeapFrog-$version-setup.exe" setup/leapfrog.nsi && echo "packaged dist/LeapFrog-$version-setup.exe"
 fi
 
@@ -50,8 +49,9 @@ if [ "$install" = 1 ]; then
     # The wizard's uninstall.exe (Settings > Apps) survives a dev install over the folder.
     mkdir -p "$target" && find "$target" -mindepth 1 -maxdepth 1 ! -name uninstall.exe -exec rm -rf {} + && cp -r "$out"/. "$target"/
     win=$(wslpath -w "$target")
-    if ! "/mnt/e/Games/Steam/steamapps/common/SteamVR/bin/win64/vrpathreg.exe" show 2>/dev/null | tr -d '\r' | grep -q "leapfrog : $win"; then
-        "/mnt/e/Games/Steam/steamapps/common/SteamVR/bin/win64/vrpathreg.exe" adddriver "$win"
+    vrpathreg="/mnt/e/Games/Steam/steamapps/common/SteamVR/bin/win64/vrpathreg.exe"
+    if ! "$vrpathreg" show 2>/dev/null | tr -d '\r' | grep -q "leapfrog : $win"; then
+        "$vrpathreg" adddriver "$win"
     fi
     echo "installed to $win"
 fi

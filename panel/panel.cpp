@@ -96,9 +96,16 @@ extern "C" int lfp_set_string(const char* key, const char* value) {
     return e;
 }
 
+// A whole number written by a tool is stored as an int and GetFloat refuses it, so this falls
+// back to GetInt32: an int-stored key reads as a float.
 extern "C" int lfp_get_float(const char* key, float* value) {
     vr::EVRSettingsError e = vr::VRSettingsError_None;
     *value = g_settings->GetFloat(SECTION, key, &e);
+    if (e == vr::VRSettingsError_None) {
+        return e;
+    }
+    e = vr::VRSettingsError_None;
+    *value = static_cast<float>(g_settings->GetInt32(SECTION, key, &e));
     return e;
 }
 
@@ -126,14 +133,19 @@ extern "C" const char* lfp_error_name(int code) {
 
 // The driver's vrserver, which spawned this process: the panel ends with it even when no quit
 // event arrives (a crash).
-extern "C" int lfp_process_gone(unsigned pid) {
-    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid);
-    if (!h) {
-        return 1;
+extern "C" void* lfp_process_open(unsigned pid) {
+    return OpenProcess(SYNCHRONIZE, FALSE, pid);
+}
+
+// A failed wait counts as ended too, so a bad handle cannot turn the caller's loop into a spin.
+extern "C" int lfp_process_wait(void* process, unsigned ms) {
+    return WaitForSingleObject(process, ms) == WAIT_TIMEOUT ? 0 : 1;
+}
+
+extern "C" void lfp_process_close(void* process) {
+    if (process) {
+        CloseHandle(process);
     }
-    int gone = WaitForSingleObject(h, 0) == WAIT_OBJECT_0 ? 1 : 0;
-    CloseHandle(h);
-    return gone;
 }
 
 // The panel as a registered overlay app: SteamVR's "Choose Startup Overlay Apps" list and its

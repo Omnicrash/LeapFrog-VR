@@ -33,51 +33,23 @@ BrandingText "LeapFrog ${VERSION}"
 !insertmacro MUI_LANGUAGE "English"
 
 ; Refuses while vrserver.exe runs: the driver DLL would be in use and the registration ignored.
-Function CheckSteamVR
-    nsExec::ExecToStack 'tasklist.exe /FI "IMAGENAME eq vrserver.exe" /NH'
+; find exits 0 when tasklist listed the process. One body for the installer and the uninstaller.
+!macro CheckSteamVRBody WHAT
+    nsExec::ExecToStack '"$SYSDIR\cmd.exe" /c ""$SYSDIR\tasklist.exe" /FI "IMAGENAME eq vrserver.exe" /NH | "$SYSDIR\find.exe" /I "vrserver.exe""'
     Pop $0
     Pop $1
-    ${If} $1 != ""
-        StrCpy $2 $1 ; search for the process name in the output
-        Push $1
-        Push "vrserver.exe"
-        Call StrContains
-        Pop $3
-        ${If} $3 == "1"
-            MessageBox MB_OK|MB_ICONSTOP "SteamVR is running. Close it and run the installer again."
-            Abort
-        ${EndIf}
+    ${If} $0 == 0
+        MessageBox MB_OK|MB_ICONSTOP "SteamVR is running. Close it and run the ${WHAT} again."
+        Abort
     ${EndIf}
+!macroend
+
+Function CheckSteamVR
+    !insertmacro CheckSteamVRBody "installer"
 FunctionEnd
 
-; Pushes 1 when the first string contains the second (case as given), else 0.
-Function StrContains
-    Exch $R1 ; needle
-    Exch
-    Exch $R0 ; haystack
-    Push $R2
-    Push $R3
-    Push $R4
-    StrLen $R2 $R1
-    StrCpy $R3 0
-    StrCpy $R4 0
-    loop:
-        StrCpy $R4 $R0 $R2 $R3
-        StrCmp $R4 "" notfound
-        StrCmp $R4 $R1 found
-        IntOp $R3 $R3 + 1
-        Goto loop
-    found:
-        StrCpy $R0 1
-        Goto done
-    notfound:
-        StrCpy $R0 0
-    done:
-    Pop $R4
-    Pop $R3
-    Pop $R2
-    Pop $R1
-    Exch $R0
+Function un.CheckSteamVR
+    !insertmacro CheckSteamVRBody "uninstaller"
 FunctionEnd
 
 ; Appends the engine's output to %TEMP%\LeapFrog-setup.log, for when something goes wrong.
@@ -109,7 +81,7 @@ Section "LeapFrog" SecMain
     SetOutPath "$INSTDIR"
     File /r "${DIST}/*"
     DetailPrint "Registering with SteamVR and preparing the tracking service..."
-    nsExec::ExecToStack '"$INSTDIR\leapfrog-register.exe" register'
+    nsExec::ExecToStack '"$INSTDIR\leapfrog-register.exe" register --no-apps-entry'
     Pop $0
     Pop $1
     DetailPrint $1
@@ -120,7 +92,7 @@ Section "LeapFrog" SecMain
     ${EndIf}
     WriteUninstaller "$INSTDIR\uninstall.exe"
     WriteRegStr HKCU "Software\LeapFrog" "InstallDir" "$INSTDIR"
-    ; The Settings > Apps entry: the wizard's uninstaller, over the values leapfrog-register.exe wrote.
+    ; The Settings > Apps entry is the wizard's (register ran with --no-apps-entry).
     WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "LeapFrog"
     WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
     WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "Omnicrash"
@@ -136,49 +108,6 @@ Function un.onInit
     Call un.CheckSteamVR
 FunctionEnd
 
-Function un.CheckSteamVR
-    nsExec::ExecToStack 'tasklist.exe /FI "IMAGENAME eq vrserver.exe" /NH'
-    Pop $0
-    Pop $1
-    Push $1
-    Push "vrserver.exe"
-    Call un.StrContains
-    Pop $3
-    ${If} $3 == "1"
-        MessageBox MB_OK|MB_ICONSTOP "SteamVR is running. Close it and run the uninstaller again."
-        Abort
-    ${EndIf}
-FunctionEnd
-
-Function un.StrContains
-    Exch $R1
-    Exch
-    Exch $R0
-    Push $R2
-    Push $R3
-    Push $R4
-    StrLen $R2 $R1
-    StrCpy $R3 0
-    StrCpy $R4 0
-    loop:
-        StrCpy $R4 $R0 $R2 $R3
-        StrCmp $R4 "" notfound
-        StrCmp $R4 $R1 found
-        IntOp $R3 $R3 + 1
-        Goto loop
-    found:
-        StrCpy $R0 1
-        Goto done
-    notfound:
-        StrCpy $R0 0
-    done:
-    Pop $R4
-    Pop $R3
-    Pop $R2
-    Pop $R1
-    Exch $R0
-FunctionEnd
-
 Section "Uninstall"
     StrCpy $1 ""
     ${IfNot} ${Silent}
@@ -192,6 +121,14 @@ Section "Uninstall"
     DetailPrint $2
     Push "unregister $1: exit $0$\r$\n$2"
     Call un.WriteLog
+    ; Keep the files while SteamVR may still point at them: a registration of a deleted folder
+    ; would stay behind.
+    ${If} $0 != 0
+        ${IfNot} ${Silent}
+            MessageBox MB_OK|MB_ICONSTOP "Unregistering from SteamVR failed (code $0), so the files stay in place. Details: $TEMP\LeapFrog-setup.log"
+        ${EndIf}
+        Abort
+    ${EndIf}
     RMDir /r "$INSTDIR"
     DeleteRegKey HKCU "${UNINST_KEY}"
     DeleteRegKey HKCU "Software\LeapFrog"

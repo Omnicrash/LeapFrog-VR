@@ -19,9 +19,10 @@ void lf_cleanup(void);
 void lf_run_frame(void);
 int32_t lf_hand_activate(uint32_t hand, uint32_t object_id);
 void lf_hand_deactivate(uint32_t hand);
-void lf_hand_enter_standby(uint32_t hand);
 void lf_hand_get_pose(uint32_t hand, void* driver_pose_out);
-// LF-6 passthrough hooks (shim/hooks.cpp): other drivers' calls, which Rust may edit in place.
+// Whether the passthrough hooks (shim/hooks.cpp) are wanted, decided by the Rust side at init.
+bool lf_hooks_wanted(void);
+// Passthrough hooks: other drivers' calls, which Rust may edit in place.
 void lf_hook_pose(uint32_t object_id, void* driver_pose);
 int32_t lf_hook_skeleton_create(uint64_t container, const char* name, const char* skeleton_path, int32_t tracking_level);
 void lf_hook_skeleton_created(uint64_t container, uint64_t handle);
@@ -31,8 +32,10 @@ void lfh_layout(uint32_t* driver_pose, uint32_t* tracked_pose, uint32_t* bone_tr
 void lfh_log(const char* msg);
 bool lfh_tracked_device_added(const char* serial, int32_t device_class, uint32_t hand);
 void lfh_pose_updated(uint32_t object_id, const void* driver_pose);
-// LF-6: a pose for another driver's device, sent through that driver's own host object (hooks.cpp).
+// A pose for another driver's device, sent through that driver's own host object (hooks.cpp).
 bool lfh_pose_updated_as(uint32_t object_id, const void* driver_pose);
+// The device and skeleton handle the hooks pass to Rust for this hand (UINT32_MAX / 0: none).
+void lfh_hooks_watch(uint32_t hand, uint32_t object_id, uint64_t skeleton);
 void lfh_get_raw_poses(float predicted_seconds, void* tracked_poses, uint32_t count);
 uint64_t lfh_prop_container(uint32_t object_id);
 int32_t lfh_set_prop_string(uint64_t container, int32_t prop, const char* value);

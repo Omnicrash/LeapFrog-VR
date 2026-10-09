@@ -64,10 +64,10 @@ pub struct Switch {
 /// Samples before the learned grip point is trusted over the prior.
 const GRIP_SAMPLES: u32 = 45;
 
-/// Where the wrist sits in the Index controller's frame while held, as learned on the author's setup across
-/// sessions (within a few cm of this each time: 0.20-0.24 m from the tracked origin, mostly
-/// forward). The reference until the grip is learned; with the origin as the reference a held
-/// hand measured 0.22-0.25 m "away" (2026-10-08, 03:38).
+/// Where the wrist sits in the Index controller's frame while held, as learned on the author's
+/// setup across sessions (within a few cm of this each time: 0.20-0.24 m from the tracked
+/// origin, mostly forward). The reference until the grip is learned; with the origin as the
+/// reference a held hand measured 0.22-0.25 m "away".
 const GRIP_PRIOR: Vec3 = Vec3::new(0.0, 0.07, 0.21);
 
 /// The away threshold while the grip is still the prior, which may be off by a hand's width.
@@ -122,7 +122,7 @@ impl Switch {
 
         // No optical lock on the controller: its gyro-only position drifts and its velocity is
         // noise, so the distance rules are off; the hand is the better data whenever the Leap
-        // sees it (user, 2026-10-08 07:15: the hand is where the hand is). No pick-up without
+        // sees it (the hand is where the hand is). No pick-up without
         // optical lock: the controller takes over once it is tracked again and moves or is at
         // the hand.
         let Some(controller) = o.controller_position else {

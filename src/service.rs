@@ -1,9 +1,15 @@
 //! The UltraleapTracking Windows service, started with the driver and stopped with it: paused,
 //! the service still runs the camera and its infrared LEDs, only stopped turns them off. The
-//! user's account was granted start/stop on the service (`sc sdset`, once; a Gemini reinstall
-//! resets it), so no elevation is involved. Folded in from the old leaphint helper.
+//! user's account was granted start/stop on the service (by the installer; a Gemini reinstall
+//! resets it), so no elevation is involved. Also the helper processes started next to the DLL
+//! and the process checks.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::log::log;
+
+const SERVICE: &str = "UltraleapTracking";
 
 #[cfg(all(windows, not(feature = "host-stubs")))]
 mod win {
@@ -11,26 +17,25 @@ mod win {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_NOT_ACTIVE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
     use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ};
-
-    use windows_sys::Win32::Foundation::{ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_NOT_ACTIVE, GetLastError};
     use windows_sys::Win32::System::Services::*;
 
-    const NAME: &[u16] = &[
-        b'U' as u16, b'l' as u16, b't' as u16, b'r' as u16, b'a' as u16, b'l' as u16, b'e' as u16, b'a' as u16, b'p' as u16,
-        b'T' as u16, b'r' as u16, b'a' as u16, b'c' as u16, b'k' as u16, b'i' as u16, b'n' as u16, b'g' as u16, 0,
-    ];
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
 
     /// Starts or stops the service and waits up to 10 s for it to settle. Ok(true) when it is in
     /// the wanted state, Ok(false) when it did not get there in time, Err(code) without access.
     pub fn set(run: bool) -> Result<bool, u32> {
+        let name = wide(super::SERVICE);
         // SAFETY: Win32 service control API, handles closed on every path below.
         unsafe {
             let manager = OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT);
             if manager.is_null() {
                 return Err(GetLastError());
             }
-            let service = OpenServiceW(manager, NAME.as_ptr(), SERVICE_START | SERVICE_STOP | SERVICE_QUERY_STATUS);
+            let service = OpenServiceW(manager, name.as_ptr(), SERVICE_START | SERVICE_STOP | SERVICE_QUERY_STATUS);
             if service.is_null() {
                 let error = GetLastError();
                 CloseServiceHandle(manager);
@@ -72,13 +77,10 @@ mod win {
         }
     }
 
-    /// Whether a process with this image name runs (case-insensitive), via a process snapshot.
+    /// Whether a process with this image name runs (case-insensitive), via a process snapshot;
+    /// no allocation per entry, so it is cheap enough for a background poll.
     pub fn process_running(name: &str) -> bool {
-        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
-        };
-        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-        let wanted = name.to_ascii_lowercase();
+        let wanted: Vec<u16> = name.encode_utf16().map(|c| ascii_lower(c)).collect();
         // SAFETY: Win32 ToolHelp API, handle closed below; the entry struct is sized before use.
         unsafe {
             let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -91,13 +93,16 @@ mod win {
             let mut ok = Process32FirstW(snapshot, &mut entry) != 0;
             while ok && !found {
                 let end = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
-                let exe = String::from_utf16_lossy(&entry.szExeFile[..end]).to_ascii_lowercase();
-                found = exe == wanted;
+                found = end == wanted.len() && entry.szExeFile[..end].iter().zip(&wanted).all(|(&a, &b)| ascii_lower(a) == b);
                 ok = Process32NextW(snapshot, &mut entry) != 0;
             }
             CloseHandle(snapshot);
             found
         }
+    }
+
+    fn ascii_lower(c: u16) -> u16 {
+        if (b'A' as u16..=b'Z' as u16).contains(&c) { c + 32 } else { c }
     }
 
     fn wide(s: &str) -> Vec<u16> {
@@ -128,7 +133,7 @@ mod win {
     }
 
     /// The folder this DLL was loaded from (bin/win64 of the driver).
-    pub fn own_directory() -> Option<std::path::PathBuf> {
+    fn own_directory() -> Option<std::path::PathBuf> {
         use windows_sys::Win32::System::LibraryLoader::{
             GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
         };
@@ -153,46 +158,37 @@ mod win {
         file.parent().map(|p| p.to_path_buf())
     }
 
-    /// A watchdog for the case Cleanup never runs (vrserver crashed or killed):
-    /// `leapfrog-watchdog.exe <pid>` next to this DLL waits on this very process and then stops
-    /// the service. Detached, so it outlives vrserver; after a clean exit it finds the service
-    /// stopped already.
-    pub fn spawn_watchdog() -> Result<u32, String> {
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        let exe = own_directory().ok_or("own path unknown")?.join("leapfrog-watchdog.exe");
-        let child = Command::new(&exe)
+    /// Starts a helper exe from this DLL's folder with vrserver's pid as the last argument, no
+    /// window, no inherited stdio. Detached helpers outlive vrserver.
+    fn spawn(exe: &str, args: &[&str], detached: bool) -> Result<u32, String> {
+        let path = own_directory().ok_or("own path unknown")?.join(exe);
+        let child = Command::new(&path)
+            .args(args)
             .arg(std::process::id().to_string())
-            .creation_flags(DETACHED_PROCESS)
+            .creation_flags(if detached { DETACHED_PROCESS } else { CREATE_NO_WINDOW })
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
-            .map_err(|e| format!("could not start {}: {e}", exe.display()))?;
+            .map_err(|e| format!("could not start {}: {e}", path.display()))?;
         Ok(child.id())
     }
 
-    /// The settings panel, `leapfrog-panel.exe ensure <pid>` next to this DLL: registers the
-    /// panel as a startup overlay app the first time (and runs it for this session); afterwards
-    /// SteamVR launches it itself, per its "Choose Startup Overlay Apps" list.
+    /// A watchdog for the case Cleanup never runs (vrserver crashed or killed): it waits on this
+    /// very process and then stops the service; after a clean exit it finds it stopped already.
+    pub fn spawn_watchdog() -> Result<u32, String> {
+        spawn("leapfrog-watchdog.exe", &[], true)
+    }
+
+    /// The settings panel's `ensure`: registers the panel as a startup overlay app the first
+    /// time; afterwards SteamVR launches it itself, per its "Choose Startup Overlay Apps" list.
     pub fn spawn_panel() -> Result<u32, String> {
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let exe = own_directory().ok_or("own path unknown")?.join("leapfrog-panel.exe");
-        let child = Command::new(&exe)
-            .arg("ensure")
-            .arg(std::process::id().to_string())
-            .creation_flags(CREATE_NO_WINDOW)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| format!("could not start {}: {e}", exe.display()))?;
-        Ok(child.id())
+        spawn("leapfrog-panel.exe", &["ensure"], false)
     }
 
     /// `leapctl config tracking resume|pause`: the saved pause state of the service. LeapSetPause
     /// from the SDK reports success and changes nothing on Gemini 5.20.
     pub fn tracking(state: &str) -> Result<i32, String> {
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let tool = leapctl()?;
         let status = Command::new(&tool)
             .args(["config", "tracking", state])
@@ -226,15 +222,18 @@ mod win {
     }
 }
 
+/// Starts the service, optionally resumes tracking, and spawns the watchdog.
 #[cfg_attr(feature = "host-stubs", allow(dead_code))]
-pub fn start() {
+pub fn start(resume_tracking: bool) {
     report("start", win::set(true));
-    // A pause left behind (the old helper paused at every SteamVR exit) survives restarts and
-    // means a running service with no hands, so every start resumes.
-    match win::tracking("resume") {
-        Ok(0) => log!("Leap tracking resumed"),
-        Ok(code) => log!("Leap tracking resume: leapctl exit {code}"),
-        Err(why) => log!("Leap tracking resume skipped: {why}"),
+    // A saved pause (the Ultraleap tray app, leapctl, an old helper) survives restarts and means
+    // a running service with no hands, and nothing in SteamVR says why.
+    if resume_tracking {
+        match win::tracking("resume") {
+            Ok(0) => log!("Leap tracking resumed"),
+            Ok(code) => log!("Leap tracking resume: leapctl exit {code}"),
+            Err(why) => log!("Leap tracking resume skipped: {why}"),
+        }
     }
     match win::spawn_watchdog() {
         Ok(pid) => log!("service watchdog started (pid {pid}): stops the service if vrserver dies without cleanup"),
@@ -256,12 +255,54 @@ pub fn start_panel() {
 
 fn report(what: &str, result: Result<bool, u32>) {
     match result {
-        Ok(true) => log!("UltraleapTracking service: {what} done"),
-        Ok(false) => log!("UltraleapTracking service: {what} requested, not settled within 10 s"),
-        Err(code) => log!("UltraleapTracking service: {what} failed, Win32 error {code} (no access? run leapfrog-register.exe register)"),
+        Ok(true) => log!("{SERVICE} service: {what} done"),
+        Ok(false) => log!("{SERVICE} service: {what} requested, not settled within 10 s"),
+        Err(code) => log!("{SERVICE} service: {what} failed, Win32 error {code} (no access? run leapfrog-register.exe register)"),
     }
 }
 
-pub fn process_running(name: &str) -> bool {
-    win::process_running(name)
+/// Whether a process by image name is running, polled once a second on its own thread, so the
+/// frame loop reads a flag instead of taking a process snapshot.
+pub struct ProcessWatch {
+    running: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ProcessWatch {
+    pub fn new(name: &'static str) -> ProcessWatch {
+        let running = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = {
+            let (running, stop) = (running.clone(), stop.clone());
+            std::thread::Builder::new()
+                .name("leapfrog-procwatch".into())
+                .spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        running.store(win::process_running(name), Ordering::Relaxed);
+                        for _ in 0..10 {
+                            if stop.load(Ordering::Relaxed) {
+                                return;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+                    }
+                })
+                .ok()
+        };
+        ProcessWatch { running, stop, thread }
+    }
+
+    pub fn running(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for ProcessWatch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
 }

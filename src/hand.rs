@@ -93,7 +93,7 @@ impl Hand {
         // handDeviceFullTrackingMode (read now; the level is fixed until the next start): Full is
         // the level of a real hand-tracking device and what apps expect from one; Partial is
         // the controller's level, for an app that treats Full differently (VRChat's hand mode).
-        let full = host::setting_bool("handDeviceFullTrackingMode", true);
+        let full = host::setting_bool(c"handDeviceFullTrackingMode", true);
         self.skeleton = props.create_skeleton(
             &format!("/input/skeleton/{side}"),
             &format!("/skeleton/hand/{side}"),
@@ -126,10 +126,10 @@ impl Hand {
         let (world_rotation, world_translation, rotation, position) = frame.pose(&Head::from_pose(head), offsets);
         let mut pose = DriverPose::disconnected();
         pose.device_is_connected = true;
-        pose.world_from_driver_rotation = quat(world_rotation);
-        pose.world_from_driver_translation = vec(world_translation);
-        pose.rotation = quat(rotation);
-        pose.position = vec(position);
+        pose.world_from_driver_rotation = Quaternion::from(world_rotation);
+        pose.world_from_driver_translation = host::vec_f64(world_translation);
+        pose.rotation = Quaternion::from(rotation);
+        pose.position = host::vec_f64(position);
         pose.pose_is_valid = true;
         pose.result = host::TRACKING_RESULT_RUNNING_OK;
         frame.skeleton(&mut self.bones);
@@ -186,10 +186,3 @@ impl Hand {
     }
 }
 
-fn quat(q: glam::Quat) -> Quaternion {
-    Quaternion { w: q.w as f64, x: q.x as f64, y: q.y as f64, z: q.z as f64 }
-}
-
-fn vec(v: Vec3) -> [f64; 3] {
-    [v.x as f64, v.y as f64, v.z as f64]
-}

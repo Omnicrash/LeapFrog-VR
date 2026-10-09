@@ -21,7 +21,7 @@ public:
     }
 
     void Deactivate() override { lf_hand_deactivate(m_index); }
-    void EnterStandby() override { lf_hand_enter_standby(m_index); }
+    void EnterStandby() override {}
     void* GetComponent(const char*) override { return nullptr; }
     void DebugRequest(const char*, char* pchResponseBuffer, uint32_t unResponseBufferSize) override
     {
@@ -51,7 +51,7 @@ public:
     {
         VR_INIT_SERVER_DRIVER_CONTEXT(pDriverContext);
         EVRInitError result = static_cast<EVRInitError>(lf_init());
-        if (result == VRInitError_None && lfh_settings_bool("driver_leapfrog", "passthrough", false)) {
+        if (result == VRInitError_None && lf_hooks_wanted()) {
             lf_hooks::install(pDriverContext);
         }
         return result;
@@ -60,6 +60,7 @@ public:
     void Cleanup() override
     {
         lf_cleanup();
+        lf_hooks::uninstall();
         VR_CLEANUP_SERVER_DRIVER_CONTEXT();
     }
 
@@ -177,8 +178,8 @@ extern "C" bool lfh_settings_bool(const char* section, const char* key, bool fal
     return error == VRSettingsError_None ? value : fallback;
 }
 
-// A whole number written by a tool (PowerShell's JSON writes 1 for 1.0) is stored as an int;
-// GetFloat refuses it, so fall back to GetInt32 before the default.
+// A whole number written by another tool into the settings file is stored as an int; GetFloat
+// refuses it, so fall back to GetInt32 before the default.
 extern "C" float lfh_settings_float(const char* section, const char* key, float fallback)
 {
     EVRSettingsError error = VRSettingsError_None;

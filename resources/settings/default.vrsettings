@@ -1,8 +1,8 @@
 {
   "driver_leapfrog": {
     "enable": true,
-    "debugPanic": false,
     "manageService": true,
+    "autoResumeTracking": true,
     "trackingPerformance": "ultra",
     "handOnObject": true,
     "fastHandMotion": false,
