@@ -1,4 +1,4 @@
-//! One Leap hand as a SteamVR device: pose + Full skeleton, no buttons.
+//! One Leap hand as a SteamVR device: pose + skeleton (Full by default), no buttons.
 
 use glam::Vec3;
 
@@ -90,13 +90,18 @@ impl Hand {
             props.set_string(prop, &format!("{{leapfrog}}/icons/{side}_hand_status_{name}.png"));
         }
 
+        // handDeviceFullTrackingMode (read now; the level is fixed until the next start): Full is
+        // the level of a real hand-tracking device and what apps expect from one; Partial is
+        // the controller's level, for an app that treats Full differently (VRChat's hand mode).
+        let full = host::setting_bool("handDeviceFullTrackingMode", true);
         self.skeleton = props.create_skeleton(
             &format!("/input/skeleton/{side}"),
             &format!("/skeleton/hand/{side}"),
             "/pose/raw",
+            if full { host::SKELETAL_TRACKING_FULL } else { host::SKELETAL_TRACKING_PARTIAL },
         );
         match self.skeleton {
-            Some(_) => log!("{} hand activated as device {object_id}", side),
+            Some(_) => log!("{} hand activated as device {object_id}, skeleton {}", side, if full { "Full" } else { "Partial" }),
             None => log!("{} hand activated as device {object_id}, but the skeleton component failed", side),
         }
         host::INIT_ERROR_NONE

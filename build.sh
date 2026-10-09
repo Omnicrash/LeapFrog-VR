@@ -47,7 +47,8 @@ if [ "$install" = 1 ]; then
         echo "SteamVR is running: close it first" >&2
         exit 1
     fi
-    rm -rf "$target" && cp -r "$out" "$target"
+    # The wizard's uninstall.exe (Settings > Apps) survives a dev install over the folder.
+    mkdir -p "$target" && find "$target" -mindepth 1 -maxdepth 1 ! -name uninstall.exe -exec rm -rf {} + && cp -r "$out"/. "$target"/
     win=$(wslpath -w "$target")
     if ! "/mnt/e/Games/Steam/steamapps/common/SteamVR/bin/win64/vrpathreg.exe" show 2>/dev/null | tr -d '\r' | grep -q "leapfrog : $win"; then
         "/mnt/e/Games/Steam/steamapps/common/SteamVR/bin/win64/vrpathreg.exe" adddriver "$win"

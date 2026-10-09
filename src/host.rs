@@ -17,6 +17,7 @@ pub const ROLE_RIGHT_HAND: i32 = 2;
 pub const TRACKING_RESULT_UNINITIALIZED: i32 = 1;
 pub const TRACKING_RESULT_RUNNING_OK: i32 = 200;
 pub const TRACKING_RESULT_OUT_OF_RANGE: i32 = 201;
+pub const SKELETAL_TRACKING_PARTIAL: i32 = 1;
 pub const SKELETAL_TRACKING_FULL: i32 = 2;
 pub const SKELETAL_MOTION_RANGE_WITH_CONTROLLER: i32 = 0;
 pub const SKELETAL_MOTION_RANGE_WITHOUT_CONTROLLER: i32 = 1;
@@ -302,12 +303,12 @@ impl Properties {
         Some(String::from_utf8_lossy(&buf[..end]).into_owned())
     }
 
-    pub fn create_skeleton(&self, name: &str, skeleton_path: &str, base_pose_path: &str) -> Option<u64> {
+    pub fn create_skeleton(&self, name: &str, skeleton_path: &str, base_pose_path: &str, tracking_level: i32) -> Option<u64> {
         let (name, skeleton, base) = (cstr(name), cstr(skeleton_path), cstr(base_pose_path));
         let mut handle = 0u64;
         // SAFETY: strings outlive the call; out-pointer to a local.
         let error = unsafe {
-            ffi::lfh_create_skeleton_component(self.0, name.as_ptr(), skeleton.as_ptr(), base.as_ptr(), SKELETAL_TRACKING_FULL, &mut handle)
+            ffi::lfh_create_skeleton_component(self.0, name.as_ptr(), skeleton.as_ptr(), base.as_ptr(), tracking_level, &mut handle)
         };
         (error == 0).then_some(handle)
     }
