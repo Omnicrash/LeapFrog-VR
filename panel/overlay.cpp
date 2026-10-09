@@ -146,7 +146,7 @@ BoolSetting g_pickup = {"Automatic switching", "autoPickupSwitch", true, true, t
 BoolSetting g_driver[] = {
     {"Passthrough", "passthrough", true, false, true, "The controller shows the tracked hand while resting", nullptr},
     {"Full tracking mode", "exposeAsFullTrackingMode", false, false, false, "Tell games the controller is fully hand tracked", "Breaks the pointer and the B menu button in VRChat"},
-    {"Hand devices full", "handDeviceFullTrackingMode", true, false, true, "The fallback hands report full hand tracking", nullptr},
+    {"Full hand tracking when standalone (controllers off)", "handDeviceFullTrackingMode", true, false, true, nullptr, nullptr},
     {"Manage service", "manageService", true, false, true, "Automatically start and stop the Ultraleap service with SteamVR", nullptr},
     {"Hand on object", "handOnObject", true, false, true, "Hint to the Leap that hands might be holding objects", nullptr},
     {"Fast hand motion", "fastHandMotion", false, false, false, "Favor quick movement over precision", nullptr},
