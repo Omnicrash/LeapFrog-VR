@@ -1,5 +1,5 @@
 ; LeapFrog installer (NSIS, Modern UI). The wizard copies the driver folder; the SteamVR and
-; service steps are leapfrog-setup.exe's, run quietly (it elevates itself once for the service).
+; service steps are leapfrog-register.exe's, run quietly (it elevates itself once for the service).
 ; build.sh --package compiles this: makensis -DVERSION=... -DSRC=setup -DDIST=... -DOUT=... setup/leapfrog.nsi
 
 Unicode true
@@ -80,6 +80,26 @@ Function StrContains
     Exch $R0
 FunctionEnd
 
+; Appends the engine's output to %TEMP%\LeapFrog-setup.log, for when something goes wrong.
+!macro WriteLogBody
+    Exch $R0
+    Push $R1
+    FileOpen $R1 "$TEMP\LeapFrog-setup.log" a
+    FileSeek $R1 0 END
+    FileWrite $R1 "$R0$\r$\n"
+    FileClose $R1
+    Pop $R1
+    Pop $R0
+!macroend
+
+Function WriteLog
+    !insertmacro WriteLogBody
+FunctionEnd
+
+Function un.WriteLog
+    !insertmacro WriteLogBody
+FunctionEnd
+
 Function .onInit
     Call CheckSteamVR
 FunctionEnd
@@ -89,19 +109,23 @@ Section "LeapFrog" SecMain
     SetOutPath "$INSTDIR"
     File /r "${DIST}/*"
     DetailPrint "Registering with SteamVR and preparing the tracking service..."
-    nsExec::ExecToLog '"$INSTDIR\leapfrog-setup.exe" install --in-place --quiet'
+    nsExec::ExecToStack '"$INSTDIR\leapfrog-register.exe" register'
     Pop $0
+    Pop $1
+    DetailPrint $1
+    Push "register: exit $0$\r$\n$1"
+    Call WriteLog
     ${If} $0 != 0
-        MessageBox MB_OK|MB_ICONEXCLAMATION "The SteamVR registration step failed (code $0). The files are in place; run leapfrog-setup.exe in the install folder to retry."
+        MessageBox MB_OK|MB_ICONEXCLAMATION "The SteamVR registration step failed (code $0). The files are in place; run leapfrog-register.exe in the install folder to retry."
     ${EndIf}
     WriteUninstaller "$INSTDIR\uninstall.exe"
     WriteRegStr HKCU "Software\LeapFrog" "InstallDir" "$INSTDIR"
-    ; The Settings > Apps entry: the wizard's uninstaller, over the values leapfrog-setup.exe wrote.
+    ; The Settings > Apps entry: the wizard's uninstaller, over the values leapfrog-register.exe wrote.
     WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "LeapFrog"
     WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
     WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "Omnicrash"
     WriteRegStr HKCU "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
-    WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\leapfrog-setup.exe"
+    WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\leapfrog-register.exe"
     WriteRegStr HKCU "${UNINST_KEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'
     WriteRegStr HKCU "${UNINST_KEY}" "QuietUninstallString" '"$INSTDIR\uninstall.exe" /S'
     WriteRegDWORD HKCU "${UNINST_KEY}" "NoModify" 1
@@ -162,8 +186,12 @@ Section "Uninstall"
         StrCpy $1 "--purge-settings"
     ${EndIf}
     DetailPrint "Unregistering from SteamVR..."
-    nsExec::ExecToLog '"$INSTDIR\leapfrog-setup.exe" uninstall --keep-folder --quiet $1'
+    nsExec::ExecToStack '"$INSTDIR\leapfrog-register.exe" unregister $1'
     Pop $0
+    Pop $2
+    DetailPrint $2
+    Push "unregister $1: exit $0$\r$\n$2"
+    Call un.WriteLog
     RMDir /r "$INSTDIR"
     DeleteRegKey HKCU "${UNINST_KEY}"
     DeleteRegKey HKCU "Software\LeapFrog"

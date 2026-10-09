@@ -1,14 +1,15 @@
-//! `leapfrog-setup.exe`: installs the LeapFrog SteamVR driver from the folder this exe sits in,
-//! registers it with SteamVR and Windows (Settings > Apps), sets up the UltraleapTracking
-//! service, and takes all of it out again. No arguments: interactive. Subcommands:
+//! `leapfrog-register.exe`: the engine behind the installer. Registers the LeapFrog driver folder
+//! this exe sits in with SteamVR and Windows (Settings > Apps), sets up the UltraleapTracking
+//! service, and takes all of it out again. The wizard (`leapfrog.nsi`) copies the files and calls
+//! this quietly; from a folder of your own, run it directly. No arguments: a menu. Subcommands:
 //!
-//!   install [--to DIR] [--in-place]            default DIR: %LOCALAPPDATA%\LeapFrog\driver
-//!   uninstall [--purge-settings] [--restore-service] [--keep-folder]
+//!   register [--to DIR]                         in place; --to copies the folder there first
+//!   unregister [--purge-settings] [--restore-service] [--remove-folder]
 //!   status
 //!   common: --quiet (no output, no prompts), --pause (wait for Enter at the end)
 //!
 //! SteamVR's registration (vrpathreg) and the Windows entry are per user; the service step
-//! needs an elevated process, so install relaunches itself elevated when it is not.
+//! needs an elevated process, so register relaunches itself elevated when it is not.
 
 mod win;
 
@@ -24,12 +25,12 @@ const SERVICE_ACE_RIGHTS: &str = "LCRPWPRC";
 
 struct Options {
     command: String,
+    /// Copy the folder there before registering; None registers in place.
     to: Option<PathBuf>,
-    in_place: bool,
     purge_settings: bool,
     restore_service: bool,
-    /// Registrations only; the caller (the wizard's uninstaller) removes the files.
-    keep_folder: bool,
+    /// Also delete the driver folder (the wizard's uninstaller removes the files itself).
+    remove_folder: bool,
     quiet: bool,
     pause: bool,
     /// Uninstall relaunched from a temp copy: the folder to remove.
@@ -59,10 +60,9 @@ fn parse(args: Vec<String>) -> Options {
     let mut o = Options {
         command: String::new(),
         to: None,
-        in_place: false,
         purge_settings: false,
         restore_service: false,
-        keep_folder: false,
+        remove_folder: false,
         quiet: false,
         pause: false,
         folder: None,
@@ -71,7 +71,7 @@ fn parse(args: Vec<String>) -> Options {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "install" | "uninstall" | "status" => o.command = args[i].clone(),
+            "register" | "unregister" | "status" => o.command = args[i].clone(),
             "--to" => {
                 i += 1;
                 o.to = args.get(i).map(PathBuf::from);
@@ -84,9 +84,8 @@ fn parse(args: Vec<String>) -> Options {
                 i += 1;
                 o.user_sid = args.get(i).cloned();
             }
-            "--in-place" => o.in_place = true,
             "--purge-settings" => o.purge_settings = true,
-            "--keep-folder" => o.keep_folder = true,
+            "--remove-folder" => o.remove_folder = true,
             "--restore-service" => o.restore_service = true,
             "--quiet" => o.quiet = true,
             "--pause" => o.pause = true,
@@ -112,8 +111,8 @@ fn run(o: &Options) -> Result<(), String> {
             print!("{}", status_text()?);
             Ok(())
         }
-        "install" => install(o),
-        "uninstall" => uninstall(o),
+        "register" => install(o),
+        "unregister" => uninstall(o),
         _ => interactive(o),
     }
 }
@@ -272,7 +271,7 @@ fn configure_service(sid: &str) -> Result<(), String> {
 // Windows "Apps" entry
 
 fn register_app(dir: &Path, version: &str) -> Result<(), String> {
-    let exe = dir.join("leapfrog-setup.exe");
+    let exe = dir.join("leapfrog-register.exe");
     let size_kb = dir_size(dir) / 1024;
     let date = run_cmd("powershell.exe", &["-NoProfile", "-Command", "Get-Date -Format yyyyMMdd"]).map(|(_, t)| t.trim().to_string()).unwrap_or_default();
     let values: Vec<(&str, &str, String)> = vec![
@@ -282,8 +281,8 @@ fn register_app(dir: &Path, version: &str) -> Result<(), String> {
         ("InstallLocation", "REG_SZ", dir.to_string_lossy().into()),
         ("InstallDate", "REG_SZ", date),
         ("DisplayIcon", "REG_SZ", exe.to_string_lossy().into()),
-        ("UninstallString", "REG_SZ", format!("\"{}\" uninstall --pause", exe.display())),
-        ("QuietUninstallString", "REG_SZ", format!("\"{}\" uninstall --quiet", exe.display())),
+        ("UninstallString", "REG_SZ", format!("\"{}\" unregister --remove-folder --pause", exe.display())),
+        ("QuietUninstallString", "REG_SZ", format!("\"{}\" unregister --remove-folder --quiet", exe.display())),
         ("EstimatedSize", "REG_DWORD", size_kb.to_string()),
         ("NoModify", "REG_DWORD", "1".into()),
         ("NoRepair", "REG_DWORD", "1".into()),
@@ -473,14 +472,7 @@ fn install(o: &Options) -> Result<(), String> {
         let code = win::relaunch_elevated(&args)?;
         return if code == 0 { Ok(()) } else { Err(format!("the elevated step exited with code {code}")) };
     }
-    let target = if o.in_place {
-        source.clone()
-    } else {
-        match &o.to {
-            Some(t) => t.clone(),
-            None => PathBuf::from(std::env::var("LOCALAPPDATA").map_err(|_| "LOCALAPPDATA not set")?).join("LeapFrog").join("driver"),
-        }
-    };
+    let target = o.to.clone().unwrap_or_else(|| source.clone());
     let same = target.canonicalize().ok() == source.canonicalize().ok();
     if !same {
         if let Some(old) = vr.registered()? {
@@ -517,7 +509,7 @@ fn uninstall(o: &Options) -> Result<(), String> {
     // A folder to remove: the one named (temp relaunch), the registered one, or this exe's own
     // when it holds the driver (a previous uninstall that got as far as unregistering).
     let own = me.join("driver.vrdrivermanifest").exists().then(|| me.clone());
-    let folder = if o.keep_folder { None } else { o.folder.clone().or(registered.clone()).or(own) };
+    let folder = if o.remove_folder { o.folder.clone().or(registered.clone()).or(own) } else { None };
     // Never hold the folder open while removing it: a working directory inside it (inherited by
     // the temp copy as well) made remove_dir_all fail on the folder itself (2026-10-09).
     let temp = PathBuf::from(std::env::var("TEMP").map_err(|_| "TEMP not set")?);
@@ -525,7 +517,7 @@ fn uninstall(o: &Options) -> Result<(), String> {
     // Running from inside the folder to delete: continue from a temp copy.
     if let Some(dir) = &folder {
         if o.folder.is_none() && me.canonicalize().ok() == dir.canonicalize().ok() {
-            let copy = temp.join("leapfrog-setup.exe");
+            let copy = temp.join("leapfrog-register.exe");
             std::fs::copy(std::env::current_exe().map_err(|e| e.to_string())?, &copy).map_err(|e| format!("cannot copy to temp: {e}"))?;
             let mut args: Vec<String> = std::env::args().skip(1).collect();
             args.push("--folder".into());
@@ -578,13 +570,12 @@ fn uninstall(o: &Options) -> Result<(), String> {
 fn interactive(_o: &Options) -> Result<(), String> {
     print!("{}", status_text()?);
     let here = exe_dir()?;
-    let installable = is_dist_folder(&here);
+    let registrable = is_dist_folder(&here);
     println!();
-    if installable {
-        println!("  [I] Install from this folder (to %LOCALAPPDATA%\\LeapFrog\\driver)");
-        println!("  [R] Register this folder in place");
+    if registrable {
+        println!("  [R] Register this folder with SteamVR");
     }
-    println!("  [U] Uninstall");
+    println!("  [U] Unregister and remove the driver folder");
     println!("  [Q] Quit");
     print!("> ");
     use std::io::Write as _;
@@ -593,9 +584,8 @@ fn interactive(_o: &Options) -> Result<(), String> {
     let _ = std::io::stdin().read_line(&mut line);
     let pause = Options { pause: true, ..parse(vec![]) };
     match line.trim().to_ascii_lowercase().as_str() {
-        "i" if installable => install(&Options { command: "install".into(), ..pause }),
-        "r" if installable => install(&Options { command: "install".into(), in_place: true, ..pause }),
-        "u" => uninstall(&Options { command: "uninstall".into(), ..pause }),
+        "r" if registrable => install(&Options { command: "register".into(), ..pause }),
+        "u" => uninstall(&Options { command: "unregister".into(), remove_folder: true, ..pause }),
         _ => Ok(()),
     }
 }

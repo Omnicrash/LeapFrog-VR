@@ -1,9 +1,9 @@
 [package]
-name = "leapfrog-setup"
+name = "leapfrog-register"
 version = "0.2.0"
 edition = "2021"
 license = "MIT"
-description = "Installs, registers and removes the LeapFrog SteamVR driver"
+description = "Registers the LeapFrog SteamVR driver folder, sets up the service, and takes it out again; the engine behind the installer"
 publish = false
 
 [dependencies]

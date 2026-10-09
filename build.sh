@@ -26,7 +26,7 @@ cp -r resources "$out/resources"
 cp target/x86_64-pc-windows-msvc/release/driver_leapfrog.dll "$out/bin/win64/"
 cp target/x86_64-pc-windows-msvc/release/leapfrog-watchdog.exe "$out/bin/win64/"
 cp target/x86_64-pc-windows-msvc/release/leapfrog-panel.exe "$out/bin/win64/"
-cp target/x86_64-pc-windows-msvc/release/leapfrog-setup.exe "$out/"
+cp target/x86_64-pc-windows-msvc/release/leapfrog-register.exe "$out/"
 version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 echo "$version" > "$out/VERSION"
 cp target/x86_64-pc-windows-msvc/release/driver_leapfrog.pdb "$out/bin/win64/" 2>/dev/null || true
@@ -34,10 +34,9 @@ leapsdk="${LEAPSDK_LIB_PATH:-/mnt/e/Games/Steam/steamapps/common/Ultraleap Gemin
 cp "$leapsdk/LeapC.dll" "$out/bin/win64/"
 echo "built $out (version $version)"
 
-# --package: the wizard installer (NSIS, setup/leapfrog.nsi) and the folder as a zip for a
-# portable install; leapfrog-setup.exe is inside both.
+# --package: the wizard installer (NSIS, setup/leapfrog.nsi) from the dist folder.
 if [ "$package" = 1 ]; then
-    (cd dist && rm -f "LeapFrog-$version.zip" && zip -qr "LeapFrog-$version.zip" leapfrog) && echo "packaged dist/LeapFrog-$version.zip"
+    rm -f dist/LeapFrog-*.zip
     makensis -V2 -DVERSION="$version" -DSRC="$PWD/setup" -DDIST="$PWD/dist/leapfrog" -DOUT="$PWD/dist/LeapFrog-$version-setup.exe" setup/leapfrog.nsi && echo "packaged dist/LeapFrog-$version-setup.exe"
 fi
 
