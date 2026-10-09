@@ -3,7 +3,7 @@
 //! service, and takes all of it out again. No arguments: interactive. Subcommands:
 //!
 //!   install [--to DIR] [--in-place]            default DIR: %LOCALAPPDATA%\LeapFrog\driver
-//!   uninstall [--purge-settings] [--restore-service]
+//!   uninstall [--purge-settings] [--restore-service] [--keep-folder]
 //!   status
 //!   common: --quiet (no output, no prompts), --pause (wait for Enter at the end)
 //!
@@ -28,6 +28,8 @@ struct Options {
     in_place: bool,
     purge_settings: bool,
     restore_service: bool,
+    /// Registrations only; the caller (the wizard's uninstaller) removes the files.
+    keep_folder: bool,
     quiet: bool,
     pause: bool,
     /// Uninstall relaunched from a temp copy: the folder to remove.
@@ -60,6 +62,7 @@ fn parse(args: Vec<String>) -> Options {
         in_place: false,
         purge_settings: false,
         restore_service: false,
+        keep_folder: false,
         quiet: false,
         pause: false,
         folder: None,
@@ -83,6 +86,7 @@ fn parse(args: Vec<String>) -> Options {
             }
             "--in-place" => o.in_place = true,
             "--purge-settings" => o.purge_settings = true,
+            "--keep-folder" => o.keep_folder = true,
             "--restore-service" => o.restore_service = true,
             "--quiet" => o.quiet = true,
             "--pause" => o.pause = true,
@@ -513,7 +517,7 @@ fn uninstall(o: &Options) -> Result<(), String> {
     // A folder to remove: the one named (temp relaunch), the registered one, or this exe's own
     // when it holds the driver (a previous uninstall that got as far as unregistering).
     let own = me.join("driver.vrdrivermanifest").exists().then(|| me.clone());
-    let folder = o.folder.clone().or(registered.clone()).or(own);
+    let folder = if o.keep_folder { None } else { o.folder.clone().or(registered.clone()).or(own) };
     // Never hold the folder open while removing it: a working directory inside it (inherited by
     // the temp copy as well) made remove_dir_all fail on the folder itself (2026-10-09).
     let temp = PathBuf::from(std::env::var("TEMP").map_err(|_| "TEMP not set")?);

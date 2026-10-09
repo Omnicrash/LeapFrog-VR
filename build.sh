@@ -34,9 +34,11 @@ leapsdk="${LEAPSDK_LIB_PATH:-/mnt/e/Games/Steam/steamapps/common/Ultraleap Gemin
 cp "$leapsdk/LeapC.dll" "$out/bin/win64/"
 echo "built $out (version $version)"
 
-# --package: the folder as a zip for other machines; the installer is inside it.
+# --package: the wizard installer (NSIS, setup/leapfrog.nsi) and the folder as a zip for a
+# portable install; leapfrog-setup.exe is inside both.
 if [ "$package" = 1 ]; then
     (cd dist && rm -f "LeapFrog-$version.zip" && zip -qr "LeapFrog-$version.zip" leapfrog) && echo "packaged dist/LeapFrog-$version.zip"
+    makensis -V2 -DVERSION="$version" -DSRC="$PWD/setup" -DDIST="$PWD/dist/leapfrog" -DOUT="$PWD/dist/LeapFrog-$version-setup.exe" setup/leapfrog.nsi && echo "packaged dist/LeapFrog-$version-setup.exe"
 fi
 
 # --install: copy over the registered driver folder; refused while SteamVR holds the DLL.
