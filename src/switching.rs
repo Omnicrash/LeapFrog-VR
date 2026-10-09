@@ -1,5 +1,5 @@
 //! Which of the two should drive a hand while its controller is powered on: the controller, or
-//! the Leap (the composite device, doc/Passthrough.md). Pure logic over positions and
+//! the Leap (the composite device). Pure logic over positions and
 //! velocities, so it can be tested without SteamVR. A wrong decision costs a moment of the
 //! other data source, never a device change, so nothing here waits.
 //!
@@ -64,7 +64,7 @@ pub struct Switch {
 /// Samples before the learned grip point is trusted over the prior.
 const GRIP_SAMPLES: u32 = 45;
 
-/// Where the wrist sits in the Index controller's frame while held, as learned on DCM1 across
+/// Where the wrist sits in the Index controller's frame while held, as learned on the author's setup across
 /// sessions (within a few cm of this each time: 0.20-0.24 m from the tracked origin, mostly
 /// forward). The reference until the grip is learned; with the origin as the reference a held
 /// hand measured 0.22-0.25 m "away" (2026-10-08, 03:38).

@@ -1,6 +1,5 @@
 //! The LeapC connection on its own thread. Publishes the newest sample per hand; the rules for
-//! coming up next to a tracking service that may start later, or restart, are from
-//! `doc/Background.md`:
+//! coming up next to a tracking service that may start later, or restart, as observed:
 //! - a connection opened before the service ran comes up once the service does but never gets
 //!   hands: when the connection event arrives late (> 1 s after opening), open a fresh one;
 //! - a lost connection (service stopped or restarted) gets a fresh connection too.

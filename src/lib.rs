@@ -34,7 +34,7 @@ static STATE: Mutex<Option<State>> = Mutex::new(None);
 const STALE_US: i64 = 300_000;
 
 /// SteamVR counts binding loads per app process for its whole run and VRChat refuses them from
-/// 100 (doc/Background.md, "The binding budget, client side"); a device transition costs about
+/// 100 (seen in vrclient_VRChat.txt: "Failed to load binding file ... load count=100"); a device transition costs about
 /// one. With the passthrough on, transitions only happen on controller power, so this rarely
 /// matters; warn from here on, every 25.
 const TRANSITION_WARNING: u32 = 60;

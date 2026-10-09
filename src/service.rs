@@ -1,7 +1,7 @@
 //! The UltraleapTracking Windows service, started with the driver and stopped with it: paused,
 //! the service still runs the camera and its infrared LEDs, only stopped turns them off. The
 //! user's account was granted start/stop on the service (`sc sdset`, once; a Gemini reinstall
-//! resets it), so no elevation is involved. From leaphint (E:\Games\VR\leaphint), folded in.
+//! resets it), so no elevation is involved. Folded in from the old leaphint helper.
 
 use crate::log::log;
 
@@ -258,7 +258,7 @@ fn report(what: &str, result: Result<bool, u32>) {
     match result {
         Ok(true) => log!("UltraleapTracking service: {what} done"),
         Ok(false) => log!("UltraleapTracking service: {what} requested, not settled within 10 s"),
-        Err(code) => log!("UltraleapTracking service: {what} failed, Win32 error {code} (no access? see doc/Design.md)"),
+        Err(code) => log!("UltraleapTracking service: {what} failed, Win32 error {code} (no access? run leapfrog-register.exe register)"),
     }
 }
 

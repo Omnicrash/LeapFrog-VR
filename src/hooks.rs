@@ -1,4 +1,4 @@
-//! The Rust side of the LF-6 passthrough hooks (`shim/hooks.cpp`, doc/Passthrough.md).
+//! The Rust side of the passthrough hooks (`shim/hooks.cpp`).
 //!
 //! These run on other drivers' threads, in the middle of their host calls, so they keep their own
 //! small mutex and never touch [`crate::STATE`]: the frame loop writes what they need here, they

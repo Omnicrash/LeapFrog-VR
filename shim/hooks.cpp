@@ -1,4 +1,4 @@
-// LF-6 passthrough hooks (doc/Passthrough.md). The mechanism is Leapify's (InterfaceHook.cpp),
+// Passthrough hooks. The mechanism is Leapify's (InterfaceHook.cpp),
 // without rcmp: the vtable slot is made writable, the original kept per vtable, the replacement
 // written. Everything is passed through; Rust (lf_hook_*) may edit the pose or the bones in place
 // and never sees LeapFrog's own calls.
