@@ -1,4 +1,4 @@
-# LeapFrog
+# LeapFrog VR
 
 Hand tracking for your Index controllers, from an Ultraleap / Leap Motion camera on your headset.
 
@@ -91,7 +91,7 @@ The driver is written in Rust with a small C++ shim for OpenVR, cross-compiled f
 
 Driver:
 ```
-git clone --recurse-submodules https://github.com/Omnicrash/LeapFrog.git
+git clone --recurse-submodules https://github.com/Omnicrash/leapfrog-vr.git
 rustup target add x86_64-pc-windows-msvc
 cargo install cargo-xwin
 sudo apt install clang lld llvm nsis
