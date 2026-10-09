@@ -298,7 +298,7 @@ static void draw() {
             ImGui::PopStyleVar();
             // The restart note at the bottom edge of the panel.
             ImGui::SetCursorPosY(ImGui::GetWindowHeight() - ImGui::GetStyle().WindowPadding.y - ImGui::GetTextLineHeight());
-            ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.25f, 1.0f), "SteamVR will need to be restarted for these changes to take effect.");
+            ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.25f, 1.0f), "SteamVR will need to be restarted for these settings to take effect.");
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
