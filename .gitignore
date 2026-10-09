@@ -4,5 +4,3 @@ out/
 *.user
 target/
 dist/
-# generator of the placeholder hand models: local, the results are tracked
-handmodel/

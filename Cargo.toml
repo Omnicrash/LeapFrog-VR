@@ -8,7 +8,6 @@ publish = false
 
 [workspace]
 members = ["watchdog", "setup", "panel"]
-exclude = ["handmodel"]
 
 [lib]
 crate-type = ["cdylib"]

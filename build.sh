@@ -13,10 +13,6 @@ case "${1:-}" in
 esac
 
 cargo xwin build --release --workspace "$@"
-# The hand models are checked in as results; their generator is local and untracked.
-if [ -f handmodel/Cargo.toml ]; then
-    cargo run -q --manifest-path handmodel/Cargo.toml --target x86_64-unknown-linux-gnu -- resources/rendermodels
-fi
 
 out=dist/leapfrog
 rm -rf "$out"
