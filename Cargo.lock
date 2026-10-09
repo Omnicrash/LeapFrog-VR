@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "driver_leapfrog"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "cc",
  "glam",
@@ -42,21 +42,21 @@ checksum = "23603c7542c3b4b3b6fd83c7fe267a744f33573ec242ef150f4388e12ae52562"
 
 [[package]]
 name = "leapfrog-panel"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "leapfrog-register"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "windows-sys",
 ]
 
 [[package]]
 name = "leapfrog-watchdog"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "windows-sys",
 ]
