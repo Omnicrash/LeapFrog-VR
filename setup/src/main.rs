@@ -509,17 +509,24 @@ fn uninstall(o: &Options) -> Result<(), String> {
         return Err("SteamVR is running; close it first".into());
     }
     let registered = vr.registered()?;
-    let folder = o.folder.clone().or(registered.clone());
     let me = exe_dir()?;
+    // A folder to remove: the one named (temp relaunch), the registered one, or this exe's own
+    // when it holds the driver (a previous uninstall that got as far as unregistering).
+    let own = me.join("driver.vrdrivermanifest").exists().then(|| me.clone());
+    let folder = o.folder.clone().or(registered.clone()).or(own);
+    // Never hold the folder open while removing it: a working directory inside it (inherited by
+    // the temp copy as well) made remove_dir_all fail on the folder itself (2026-10-09).
+    let temp = PathBuf::from(std::env::var("TEMP").map_err(|_| "TEMP not set")?);
+    let _ = std::env::set_current_dir(&temp);
     // Running from inside the folder to delete: continue from a temp copy.
     if let Some(dir) = &folder {
         if o.folder.is_none() && me.canonicalize().ok() == dir.canonicalize().ok() {
-            let temp = PathBuf::from(std::env::var("TEMP").map_err(|_| "TEMP not set")?).join("leapfrog-setup.exe");
-            std::fs::copy(std::env::current_exe().map_err(|e| e.to_string())?, &temp).map_err(|e| format!("cannot copy to temp: {e}"))?;
+            let copy = temp.join("leapfrog-setup.exe");
+            std::fs::copy(std::env::current_exe().map_err(|e| e.to_string())?, &copy).map_err(|e| format!("cannot copy to temp: {e}"))?;
             let mut args: Vec<String> = std::env::args().skip(1).collect();
             args.push("--folder".into());
             args.push(dir.to_string_lossy().into());
-            Command::new(&temp).args(&args).spawn().map_err(|e| format!("cannot relaunch from temp: {e}"))?;
+            Command::new(&copy).args(&args).current_dir(&temp).spawn().map_err(|e| format!("cannot relaunch from temp: {e}"))?;
             return Ok(());
         }
     }
@@ -528,20 +535,21 @@ fn uninstall(o: &Options) -> Result<(), String> {
         let code = win::relaunch_elevated(&std::env::args().skip(1).collect::<Vec<_>>())?;
         return if code == 0 { Ok(()) } else { Err(format!("the elevated step exited with code {code}")) };
     }
+    // The small registrations first, so a folder that resists leaves nothing else behind.
     if let Some(dir) = &registered {
         vr.remove_driver(dir)?;
         say(o, "Unregistered from SteamVR");
     }
+    if remove_overlay_manifest(&vr.config_dir)? {
+        say(o, "Removed the settings panel from SteamVR's startup overlay apps");
+    }
+    unregister_app()?;
     if let Some(dir) = &folder {
         if dir.exists() {
             std::fs::remove_dir_all(dir).map_err(|e| format!("cannot remove {}: {e}", dir.display()))?;
             say(o, &format!("Removed {}", dir.display()));
         }
     }
-    if remove_overlay_manifest(&vr.config_dir)? {
-        say(o, "Removed the settings panel from SteamVR's startup overlay apps");
-    }
-    unregister_app()?;
     say(o, "Removed from Settings > Apps");
     if o.purge_settings {
         if purge_settings(&vr.config_dir)? {
